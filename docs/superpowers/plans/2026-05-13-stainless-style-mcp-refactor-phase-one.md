@@ -108,24 +108,7 @@ params: z.toJSONSchema(m.parameters),
 
 …and drop the `zod-to-json-schema` dependency.
 
-**Post-`build:docs` sanity check (run after Task 15 produces `src/mcp/search-docs/embedded-index.ts`):**
-
-Use `tsx` to import the generated TypeScript source directly — that avoids the chicken-and-egg of needing `dist/` (a full `pnpm run build`) when only `build:docs` has run:
-
-```bash
-pnpm exec tsx -e "
-import('./src/mcp/search-docs/embedded-index.ts').then(({ ENTRIES }) => {
-  const chain = ENTRIES.find(e => e.kind === 'method' && e.name === 'debank_get_chain');
-  if (!chain) { console.error('debank_get_chain not in index'); process.exit(1); }
-  const p = chain.params;
-  if (!p?.properties?.id?.type) { console.error('id param missing or untyped'); process.exit(1); }
-  if (p.properties._userQuery) { console.error('_userQuery should have been stripped'); process.exit(1); }
-  console.log('ok');
-})
-"
-```
-
-Expected: `ok`. Catches the silent-degradation scenario where the schema converter returns shape-but-no-fields. (The check runs against the just-emitted source — no stale `dist/` risk.)
+A post-build sanity check that verifies the converter actually populated `properties` for a real tool (not just shape-but-no-fields) is run in Task 15 immediately after `pnpm run build:docs`. See Task 15 Step 3a.
 
 - [ ] **Step 4: Commit dep additions**
 
@@ -1458,6 +1441,25 @@ Each file shows the agent the relevant `await debank.<resource>.<method>(...)` c
 Run: `pnpm run build:docs`
 Expected: `Wrote 41 entries to .../src/mcp/search-docs/embedded-index.ts` (31 methods + 10 cookbook).
 
+- [ ] **Step 3a: Post-build schema sanity check**
+
+The Zod → JSON Schema converter can silently emit shape-but-no-fields if the Zod 4 path is broken. Verify a real entry has typed properties and no stripped fields leaked through:
+
+```bash
+pnpm exec tsx -e "
+import('./src/mcp/search-docs/embedded-index.ts').then(({ ENTRIES }) => {
+  const chain = ENTRIES.find(e => e.kind === 'method' && e.name === 'debank_get_chain');
+  if (!chain) { console.error('debank_get_chain not in index'); process.exit(1); }
+  const p = chain.params;
+  if (!p?.properties?.id?.type) { console.error('id param missing or untyped'); process.exit(1); }
+  if (p.properties._userQuery) { console.error('_userQuery should have been stripped'); process.exit(1); }
+  console.log('ok');
+})
+"
+```
+
+Expected: `ok`. If it errors with "id param missing or untyped," the schema converter failed silently — go back to Task 1 Step 3 and switch to Zod 4's built-in `z.toJSONSchema()` per the fallback there.
+
 - [ ] **Step 4: Verify side-effect-freeness**
 
 Run: `pnpm exec tsx -e 'import("./src/mcp/legacy/tool-metadata.js").then(m=>console.log(m.TOOL_METADATA.length))'`
@@ -1615,7 +1617,7 @@ The DeBank API uses offset-based pagination via `start` and `limit` (or `page_co
 ### Error handling
 **Throw** to indicate failure: uncaught exceptions from `run(debank)` are caught by the runtime and returned as `{ok: false, error: <message>}` with `isError: true` in the MCP envelope. **Returning** an error-shaped object (e.g. `return { error: "..." }`) is a *successful* result — the runtime wraps it as `{ok: true, result: { error: "..." }}` and the agent sees no failure signal. If something genuinely failed, `throw`. **The server does NOT retry upstream errors on your behalf.** If a `debank.*` call fails, decide whether to retry from your own code. For transient errors (network blip, DeBank 429, 5xx) a short `for`-loop with a small delay is fine; for hard 4xx errors retrying is pointless. Variables don't persist between `execute` calls, so put any retry loop inside one `execute` body.
 
-Example pattern:
+Example pattern (uses the sandbox-provided `sleep(ms)` helper — `setTimeout` is NOT available in the sandbox; `sleep` is the only timer):
 
 \`\`\`js
 async function run(debank) {
@@ -1624,7 +1626,7 @@ async function run(debank) {
       return await debank.user.getUserTotalBalance({ id: "0xWALLET" });
     } catch (err) {
       if (i === 2) throw err;
-      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+      await sleep(500 * (i + 1));   // bounded by the 30 s outer deadline
     }
   }
 }
@@ -1638,6 +1640,7 @@ Return only what you need. The result crosses the V8 boundary as a JSON copy —
 - JavaScript only — no TypeScript syntax (no `: string`, no generics).
 - No `process`, no `require`, no `import`, no `eval`.
 - No `fetch` outside the `debank` client.
+- No `setTimeout` / `setInterval`. Use `await sleep(ms)` instead — the only timer the sandbox provides. Bounded by the 30 s outer deadline.
 - 30 s outer wall-clock per `execute`.
 - 5 s per `debank.*` call; on timeout you'll see `"DeBank call timed out after 5s: <method>"`.
 - No persistent state between `execute` calls.
@@ -1805,14 +1808,23 @@ export async function runInSandbox(
     const context = await isolate.createContext();
     await context.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
 
-    // console stubs
+    // console stubs + a bounded sleep helper. The instructions teach a retry
+    // loop with `await new Promise(r => setTimeout(r, ...))`, but isolated-vm
+    // doesn't install timer globals by default. Inject a sleep(ms) Callback
+    // capped at SCRIPT_DEADLINE_MS so guest code can't burn the whole budget
+    // on a single sleep. The outer Promise.race deadline still wins.
     await context.evalClosure(
       `globalThis.console = { log: (...a) => $0.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))),
                               warn: (...a) => $0.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))),
-                              error: (...a) => $1.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))) };`,
+                              error: (...a) => $1.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))) };
+       globalThis.sleep = (ms) => $2.apply(undefined, [ms], { result: { promise: true } });`,
       [
         new ivm.Reference((line: string) => logLines.push(line)),
         new ivm.Reference((line: string) => errLines.push(line)),
+        new ivm.Reference(async (ms: number) => {
+          const clamped = Math.max(0, Math.min(Number(ms) || 0, SCRIPT_DEADLINE_MS));
+          await new Promise((r) => setTimeout(r, clamped));
+        }),
       ],
     );
 
@@ -2731,7 +2743,20 @@ import { defaultConvenienceTools } from "./mcp/tools.js";
 const logger = createChildLogger("DeBank MCP");
 
 const require = createRequire(import.meta.url);
-const { version } = require("../package.json") as { version: string };
+
+// FastMCP's ServerOptions.version is typed as the semver template
+// `${number}.${number}.${number}` (see node_modules/fastmcp/dist/FastMCP.d.ts).
+// Reading from package.json yields plain `string`, which fails the template
+// literal type check. Validate the shape at runtime and narrow via assertion.
+type SemverString = `${number}.${number}.${number}`;
+function assertSemver(v: string): asserts v is SemverString {
+  if (!/^\d+\.\d+\.\d+$/.test(v)) {
+    throw new Error(`package.json version "${v}" is not a major.minor.patch semver string`);
+  }
+}
+const { version: rawVersion } = require("../package.json") as { version: string };
+assertSemver(rawVersion);
+const version: SemverString = rawVersion;
 
 function legacyEnabled(): boolean {
   if (process.env.DEBANK_MCP_LEGACY === "1") return true;
