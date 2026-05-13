@@ -112,9 +112,20 @@ src/
 1. Run the blocklist check (string match against `["process.", "require(", "import(", "eval("]`). Reject on hit.
 2. Spin up an `isolated-vm` `Isolate` with a 128 MB memory cap, create a fresh `Context`.
 3. Inject the `debank` proxy object (see §2.2). Inject `console.log / warn / error` stubs that pipe to captured buffers in the host.
-4. Compile `(async () => { ${code}\nreturn await run(debank); })()` as a script. **`isolated-vm` does not transpile TypeScript** — V8 will throw `SyntaxError` on type annotations.
-5. Run the script with `timeout: 30_000` (outer isolate budget). Each `debank.*` call inside also enforces a 5 s host-side timeout (see §2.2).
-6. JSON-stringify the resolved value via `ExternalCopy`. Concatenate captured logs.
+4. Compile `(async () => { ${code}\nreturn await run(debank); })()` as a script via `isolate.compileScript(...)`. **`isolated-vm` does not transpile TypeScript** — V8 will throw `SyntaxError` on type annotations.
+5. Run the script with explicit transfer options:
+   ```ts
+   const value = await script.run(context, {
+     timeout: 30_000,             // outer isolate budget
+     promise: true,               // await the IIFE's Promise on the host side
+     reference: false,            // do NOT return a Reference to the result
+     copy: true,                  // copy primitives/plain objects across the boundary
+   });
+   ```
+   Without `promise: true`, the host receives a Reference to the unresolved Promise — not the resolved JSON value. Without an explicit `copy` (or `externalCopy`) result mode, transferring complex returns can fail or come back as a Reference the host can't directly serialize. Same `TransferOptions` rules apply to each `ivm.Callback` return in §2.2 (where we use `new ivm.ExternalCopy(result)`). Reference: [isolated-vm TransferOptions](https://www.npmjs.com/package/isolated-vm).
+
+   Per-`debank.*` call host-side timeout is 5 s, enforced by the `AbortController` wiring in §2.2 — independent of and stricter than the 30 s outer script timeout.
+6. The `value` from step 5 is the script's return — already a plain JS structure on the host because of `copy: true`. Concatenate any captured `console.log/warn/error` lines from the host-side buffers.
 7. Dispose the isolate. Never reuse.
 8. Return MCP content: `{ content: [{type: "text", text: JSON.stringify({ok: true, result, log_lines, err_lines})}], isError: false }` on success, or `{ content: [...], isError: true }` on failure. The `ok` field inside the inner JSON mirrors CoinGecko's `is_error` semantics but uses the positive form for readability. The MCP envelope's `isError` is the canonical signal that clients check.
 
@@ -234,12 +245,50 @@ async getUserTotalNetCurve(args): Promise<string> {
 
 **Invariant:** `getUserTotalNetCurve` is the only service method that unwraps an API response before formatting. All other methods pass their raw fetch result to `formatResponse` unchanged; their `*Raw()` and markdown methods therefore share the same data shape. (`getUserChainNetCurve` looks similar but is not transformed — DeBank returns `NetCurvePoint[]` directly for that endpoint per [user.service.ts:424](../../../src/services/user.service.ts#L424).)
 
-**Step 3: wire the proxy with an end-to-end AbortController.** Each `*Raw()` method is exposed inside the isolate as an `isolated-vm` `Reference` to a host-side function. Per call:
+**Step 3: wire the proxy with `ivm.Callback({ async: true })` and an end-to-end AbortController.** Each `*Raw()` method is exposed inside the isolate as an `ivm.Callback`, **not** as a `Reference`. The distinction matters per the [isolated-vm npm docs](https://www.npmjs.com/package/isolated-vm): a `Reference` requires guest-side `.apply(...)` / `.applySync(...)` invocation (which would force us to ship a hand-written guest-side wrapper for every method); a `Callback` constructed with `{ async: true }` is transferred into the guest context as a **plain async function** the agent's `run(debank)` code can call natively — `await debank.user.getUserChainBalanceRaw({chain_id, id})`.
 
-- Args are copied across the V8 boundary via `ExternalCopy` (`isolated-vm`'s primitive — handles plain objects, arrays, primitives; not class instances or functions).
-- The host function creates a fresh `AbortController`, schedules `controller.abort()` at `5000 ms` via `setTimeout`, and calls `service.getChainRaw(args, { signal: controller.signal, timeout: 5000 })`. Both signal and timeout are passed — signal cancels the in-flight TCP/TLS request, axios `timeout` is a belt-and-braces backup for the response-read phase.
-- On rejection, the host function wraps the error with a `"DeBank call timed out after 5s: <method>"` message if the rejection was due to abort/timeout; otherwise propagates the original error.
-- The parsed JSON return is copied back into the isolate via `ExternalCopy`.
+Wiring per method (host side, sketch):
+
+```ts
+import ivm from "isolated-vm";
+
+const context = await isolate.createContext();
+await context.global.set("debank", new ivm.ExternalCopy({}).copyInto(), { release: true });
+
+await context.evalClosure(
+  `globalThis.debank.user = globalThis.debank.user || {};
+   globalThis.debank.user.getUserChainBalanceRaw = $0;`,
+  [
+    new ivm.Callback(
+      async (argsRef: ivm.Reference<unknown>) => {
+        const args = argsRef.copySync() as { chain_id: string; id: string };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5_000);
+        try {
+          const result = await userService.getUserChainBalanceRaw(args, {
+            signal: controller.signal,
+            timeout: 5_000,
+          });
+          return new ivm.ExternalCopy(result);   // explicit transfer wrapper for the return
+        } catch (err) {
+          if (controller.signal.aborted) {
+            throw new Error("DeBank call timed out after 5s: getUserChainBalanceRaw");
+          }
+          throw err;
+        } finally { clearTimeout(timer); }
+      },
+      { async: true },
+    ),
+  ],
+);
+```
+
+- Args cross the V8 boundary as a `Reference` to an `ExternalCopy`; the Callback unwraps with `.copySync()` (or `.copy()` for deeply nested data).
+- The host body runs the service `*Raw()` with both `signal` (cancels the in-flight TCP/TLS request) and `timeout: 5000` (belt-and-braces backup on the response-read phase).
+- On abort/timeout, the error is rewritten as `"DeBank call timed out after 5s: <method>"`; other rejections propagate unchanged.
+- The return value is wrapped in `ivm.ExternalCopy` — that's the explicit transfer mode for results, matching the script-result transfer mode in §2.1 step 4.
+
+**Resolver helpers** (`debank.resolveChain`, `debank.resolveChains`, `debank.resolveWrappedToken`) are wired the same way: each is an `ivm.Callback`. `resolveChain` / `resolveChains` are async and use `{ async: true }`; `resolveWrappedToken` is synchronous (pure `chains.ts` lookup) so it uses `{ async: false }` (the default).
 
 The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolation without needing `worker_threads`). The 30 s outer timeout is `isolated-vm`'s built-in script timeout; the 5 s per-call inner timeout is the `AbortController` above.
 
