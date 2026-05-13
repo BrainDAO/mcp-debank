@@ -1726,27 +1726,27 @@ export async function runInSandbox(
     }
   }
 
-  const ivm = await getIvm();
-  const isolate = new ivm.Isolate({ memoryLimit: ISOLATE_MEMORY_MB });
-
-  // Idempotent dispose
-  let disposed = false;
-  const dispose = () => {
-    if (!disposed) {
-      disposed = true;
-      try {
-        isolate.dispose();
-      } catch {
-        /* ignore */
-      }
-    }
-  };
-
   const logLines: string[] = [];
   const errLines: string[] = [];
 
+  // Move getIvm() and Isolate construction INSIDE the try so any failure
+  // (native addon load error, Isolate constructor throwing on a bad memory
+  // limit, etc.) gets normalized into the {ok:false} SandboxResult contract.
+  // Callers — including executeTool but also future unit tests — must be
+  // able to rely on "runInSandbox never rejects."
+  let ivm: typeof import("isolated-vm") | undefined;
+  let isolate: import("isolated-vm").Isolate | undefined;
+  let disposed = false;
+  const dispose = () => {
+    if (!isolate || disposed) return;
+    disposed = true;
+    try { isolate.dispose(); } catch { /* ignore */ }
+  };
+
   let timeoutHandle: NodeJS.Timeout | undefined;
   try {
+    ivm = await getIvm();
+    isolate = new ivm.Isolate({ memoryLimit: ISOLATE_MEMORY_MB });
     const context = await isolate.createContext();
     await context.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
 
@@ -1787,6 +1787,18 @@ export async function runInSandbox(
     };
   } catch (err) {
     const e = err as Error & { code?: string };
+    // Isolate creation / native load failure path. When `isolate` is still
+    // undefined the failure came from getIvm() or the Isolate constructor,
+    // not from script execution. Surface as the canonical "isolated-vm
+    // native module failed to load…" wording from spec §4.4.
+    if (!isolate) {
+      return {
+        ok: false,
+        error: `isolated-vm native module failed to load. On Alpine/ARM/older Node, run 'pnpm rebuild isolated-vm'. Original error: ${e.message || String(err)}`,
+        log_lines: logLines,
+        err_lines: e.stack ? [e.stack] : [],
+      };
+    }
     // Isolate timeout from isolated-vm has message starting with "Script execution timed out"
     if (typeof e.message === "string" && /timed out/i.test(e.message)) {
       return {
@@ -1808,6 +1820,8 @@ export async function runInSandbox(
   }
 }
 ```
+
+**Contract:** `runInSandbox` NEVER rejects. Every failure mode — blocklist hit, native load failure, isolate creation failure, script syntax error, timeout, guest throw — comes back as `{ok: false, error, log_lines, err_lines}`. `executeTool`'s outer try/catch (Task 19) is a belt-and-braces safety net for unexpected exceptions thrown by `runInSandbox` itself; it must not be relied on as the primary error path.
 
 - [ ] **Step 2: Add a unit test that doesn't require real `isolated-vm`**
 
@@ -2625,7 +2639,7 @@ describe("execute integration", () => {
 - [ ] **Step 2: Run the tests**
 
 Run: `pnpm exec vitest run tests/integration/execute.test.ts`
-Expected: PASS, 6 tests. The never-settling test takes ~30s by design.
+Expected: PASS, 6 tests. The never-settling test takes ~1s because it overrides `DEBANK_MCP_SANDBOX_DEADLINE_MS` to `1000` (the production default is 30 s; the env override is a test-only knob).
 
 If `isolated-vm` fails to load native, follow the platform install hint. If a test races and flakes (e.g., timing between abort and axios), increase the test timeout in the specific `it()` call.
 
@@ -2781,6 +2795,10 @@ describe("lazy isolated-vm", () => {
         PATH: process.env.PATH!,
         NODE_ENV: "test",
         DEBANK_API_KEY: "test-key",
+        DEBANK_MCP_LEGACY: "1",   // belt-and-braces: also enable via env so the
+                                  // test doesn't depend on argv-position parsing
+                                  // in the child (Node could in theory consume
+                                  // trailing args before they reach the app)
         DOTENV_CONFIG_PATH: "/dev/null",
       },
     });
@@ -3042,16 +3060,31 @@ Expected: every test passes. Lots of them now — ~30+ unit tests across modules
 
 If anything fails, fix and commit before declaring done.
 
-- [ ] **Step 3: Sanity-check the server boots**
+- [ ] **Step 3: Sanity-check the server boots and responds to `initialize`**
 
-Run: `node dist/index.js < /dev/null` (will print FastMCP stdio handshake on stdout and hang waiting for input — that's correct).
+FastMCP stdio servers do NOT proactively announce ready — they wait for the client to send `initialize`. Drive the handshake manually:
 
-Press Ctrl-C. The server should exit cleanly.
+```bash
+DEBANK_API_KEY=sanity node dist/index.js <<EOF
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sanity","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+EOF
+```
+
+Expected: two JSON-RPC responses on stdout. The second includes `execute`, `search_docs`, `debank_resolve`, `debank_get_supported_chain_list`. The process exits cleanly when stdin closes after the heredoc.
 
 - [ ] **Step 4: Sanity-check legacy mode**
 
-Run: `node dist/index.js --legacy-tools < /dev/null`
-Expected: same handshake, plus a log line "Legacy tools enabled". Ctrl-C to exit.
+```bash
+DEBANK_API_KEY=sanity node dist/index.js --legacy-tools <<EOF
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sanity","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+EOF
+```
+
+Expected: a "Legacy tools enabled" log line on stderr; the `tools/list` response now also includes the 30 hidden legacy tools (e.g. `debank_get_user_chain_balance`).
 
 - [ ] **Step 5: Final commit (only if anything changed during sanity checks)**
 
