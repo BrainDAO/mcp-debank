@@ -113,15 +113,29 @@ src/
 2. Spin up an `isolated-vm` `Isolate` with a 128 MB memory cap, create a fresh `Context`.
 3. Inject the `debank` proxy object (see §2.2). Inject `console.log / warn / error` stubs that pipe to captured buffers in the host.
 4. Compile `(async () => { ${code}\nreturn await run(debank); })()` as a script via `isolate.compileScript(...)`. **`isolated-vm` does not transpile TypeScript** — V8 will throw `SyntaxError` on type annotations.
-5. Run the script with explicit transfer options:
+5. Run the script with explicit transfer options **plus an outer host-side wall-clock `Promise.race`**. The `timeout` on `script.run` only guards V8 script-execution time; once the IIFE returns a Promise, isolated-vm hands it back to the host (because of `promise: true`), and the inner Promise can hang forever — e.g., `async function run(){ await new Promise(() => {}); }` never settles, doesn't touch DeBank (so the §2.2 per-call timeout never fires), and the isolate timeout doesn't apply because V8 yielded long ago. The host must enforce its own deadline:
+
    ```ts
-   const value = await script.run(context, {
-     timeout: 30_000,   // outer isolate budget
-     promise: true,     // await the IIFE's Promise on the host side
-     copy: true,        // copy the resolved value across the V8 boundary
-   });
+   const SCRIPT_DEADLINE_MS = 30_000;
+
+   const value = await Promise.race([
+     script.run(context, {
+       timeout: SCRIPT_DEADLINE_MS,   // guards V8 script execution
+       promise: true,                 // host awaits the IIFE's Promise
+       copy: true,                    // copy resolved value across the V8 boundary
+     }),
+     new Promise<never>((_, reject) => {
+       setTimeout(() => {
+         isolate.dispose();           // free V8 resources promptly
+         reject(new Error("Execute timed out after 30s. No call to settle, or guest stuck in a non-yielding loop."));
+       }, SCRIPT_DEADLINE_MS).unref?.();
+     }),
+   ]);
    ```
-   Without `promise: true`, the host receives a Reference to the unresolved Promise — not the resolved JSON value. Without an explicit `copy` (or `externalCopy`) result mode, transferring complex returns can fail or come back as a Reference the host can't directly serialize. (`TransferOptions` flags are positive — there's no `reference: false`; you simply pick one of `copy`, `externalCopy`, or `reference` to set true.) Same `TransferOptions` rules apply to each `ivm.Callback` return in §2.2 (where we use `new ivm.ExternalCopy(result)`). Reference: [isolated-vm TransferOptions](https://www.npmjs.com/package/isolated-vm).
+
+   Without the outer race, a never-settling guest Promise would hang the host indefinitely. Disposing the isolate on timeout is required to release the V8 heap. Reference: [isolated-vm docs](https://www.npmjs.com/package/isolated-vm) — `timeout` is documented for script execution, `promise` for promise proxying; neither gives a wall-clock guarantee on the resolved value.
+
+   Without `promise: true`, the host receives a Reference to the unresolved Promise — not the resolved JSON value. Without an explicit `copy` (or `externalCopy`) result mode, transferring complex returns can fail or come back as a Reference the host can't directly serialize. (`TransferOptions` flags are positive — there's no `reference: false`; you simply pick one of `copy`, `externalCopy`, or `reference` to set true.) Same `TransferOptions` rules apply to each `ivm.Callback` return in §2.2 (where we use `new ivm.ExternalCopy(result)`).
 
    Per-`debank.*` call host-side timeout is 5 s, enforced by the `AbortController` wiring in §2.2 — independent of and stricter than the 30 s outer script timeout.
 6. The `value` from step 5 is the script's return — already a plain JS structure on the host because of `copy: true`. Concatenate any captured `console.log/warn/error` lines from the host-side buffers.
@@ -267,17 +281,29 @@ await context.evalClosure(
       // ivm.Callback arguments are COPIED into the host fn — not Reference objects.
       // Per the isolated-vm Callback docs, the host receives plain JS values directly.
       async (args: { chain_id: string; id: string }) => {
+        const ABORT_MS = 5_000;
+        const AXIOS_MS = 6_000;   // axios timeout strictly LARGER than abort so abort fires first
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5_000);
+        const timer = setTimeout(() => controller.abort(), ABORT_MS);
         try {
           // Host-side dispatch calls the *Raw() method on the service singleton
           const result = await userService.getUserChainBalanceRaw(args, {
             signal: controller.signal,
-            timeout: 5_000,
+            timeout: AXIOS_MS,
           });
           return new ivm.ExternalCopy(result);   // explicit transfer wrapper for the return
         } catch (err) {
-          if (controller.signal.aborted) {
+          // Recognize both abort-first AND axios-timeout-first paths.
+          // - controller.signal.aborted: our timer fired first (intended path).
+          // - axios timeout (code 'ECONNABORTED' on Node http; 'ETIMEDOUT' on some adapters):
+          //   axios's own timeout fired before the abort — should be rare given the 1 s gap,
+          //   but if it happens we still want one canonical message.
+          const isAbort = controller.signal.aborted;
+          const isAxiosTimeout =
+            err instanceof Error &&
+            ((err as { code?: string }).code === "ECONNABORTED" ||
+             (err as { code?: string }).code === "ETIMEDOUT");
+          if (isAbort || isAxiosTimeout) {
             throw new Error("DeBank call timed out after 5s: getUserChainBalance");
           }
           throw err;
@@ -291,8 +317,8 @@ await context.evalClosure(
 
 - **Naming asymmetry is deliberate.** The guest sees `debank.user.getUserChainBalance(args)` (matches `qualified` in metadata and the cookbook examples — the `Raw` suffix is an internal implementation detail). The host body invokes `userService.getUserChainBalanceRaw(args, opts)`. The metadata's `sandboxMethodPath` field (`"user.getUserChainBalanceRaw"`) is what the wiring code uses to look up the host method to call; the agent never types `Raw`.
 - **Args cross the V8 boundary by copy.** `ivm.Callback` automatically copies argument values into the host function — the host receives plain JS values, not `Reference` objects. No `.copySync()` needed.
-- The host body runs the service `*Raw()` with both `signal` (cancels the in-flight TCP/TLS request) and `timeout: 5000` (belt-and-braces backup on the response-read phase).
-- On abort/timeout, the error is rewritten as `"DeBank call timed out after 5s: <method>"` using the agent-facing method name; other rejections propagate unchanged.
+- The host body runs the service `*Raw()` with both `signal` (cancels the in-flight TCP/TLS request) and an axios `timeout` set to `6_000` ms — **strictly larger** than the 5 s AbortController so the abort fires first under normal conditions. The axios timeout is a belt-and-braces backup for response-read stalls that the AbortController doesn't catch.
+- On rejection the catch detects both paths: `controller.signal.aborted` (intended abort-first path) **or** `err.code === "ECONNABORTED"` / `"ETIMEDOUT"` (axios-fired-first race). Either way, the error is rewritten as `"DeBank call timed out after 5s: <method>"` using the agent-facing method name — one canonical message regardless of which timer won the race. Other rejections propagate unchanged. Tests assert both paths produce the same canonical error string (msw delay 5.5s → abort wins; msw never-respond with axios `timeout: 6_000` → axios wins after our abort if abort somehow doesn't fire — synthesizable by spying on `AbortController.abort`).
 - The return value is wrapped in `ivm.ExternalCopy` — that's the explicit transfer mode for results, matching the script-result transfer mode in §2.1 step 5.
 
 **Resolver helpers** (`debank.resolveChain`, `debank.resolveChains`, `debank.resolveWrappedToken`) are wired the same way: each is an `ivm.Callback`. `resolveChain` / `resolveChains` are async and use `{ async: true }`; `resolveWrappedToken` is synchronous (pure `chains.ts` lookup) so it uses `{ async: false }` (the default).
@@ -411,12 +437,42 @@ So both side effects are unconditional under the default surface — `execute` f
 9. `server.start({transportType: "stdio"})`.
 10. **First `execute` call**: load the `isolated-vm` Node addon if not already loaded, construct a fresh `Isolate` for the call, and dispose it on completion. **Each subsequent `execute` call constructs its own fresh `Isolate`** — there is no shared/pooled isolate.
 
-**Implementation note — keeping the load truly lazy.** `isolated-vm` is a native addon; any synchronous `import "isolated-vm"` anywhere in the static import graph from `src/index.ts` loads the addon at startup, defeating step 10. The implementation **must** dynamic-import inside the execute handler — `const ivm = await import("isolated-vm")` on first call, cached in a module-level variable for subsequent calls. The same rule applies transitively: `src/mcp/execute/sandbox.ts` must not be statically imported by any module reachable from server startup; it is itself loaded via `await import()` inside the `execute` tool handler in `src/mcp/execute/tool.ts`.
+**Implementation note — keeping the load truly lazy and ESM-correct.** `isolated-vm` is a native addon shipped as CommonJS. Two implementation rules:
+
+1. **Lazy load.** Any synchronous `import "isolated-vm"` anywhere in the static import graph from `src/index.ts` loads the addon at startup, defeating step 10. The implementation **must** dynamic-import inside the execute handler — cached in a module-level variable for subsequent calls. The same rule applies transitively: `src/mcp/execute/sandbox.ts` must not be statically imported by any module reachable from server startup; it is itself loaded via `await import()` inside the `execute` tool handler in `src/mcp/execute/tool.ts`.
+2. **Normalize the namespace.** Dynamic-importing a CJS module from ESM yields a namespace where the original `module.exports` is reliably under `.default`. Node attempts named-export detection but it doesn't always surface `ivm.Isolate` directly. The implementation **must** normalize:
+   ```ts
+   const mod = await import("isolated-vm");
+   const ivm = (mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+   // now ivm.Isolate, ivm.Callback, ivm.ExternalCopy, ivm.Reference are all reachable
+   ```
+   Skipping this normalization would let `ivm.Isolate` be `undefined` on some Node versions, with a confusing TypeError at first `execute`.
 
 **Testing the laziness in an ESM project.** The package is `"type": "module"` ([package.json:6](../../../package.json#L6)), so `require.cache` is not the right probe — ESM uses the loader's module map, not CommonJS's cache. Two stronger tests, neither of which mutates project metadata:
 
 1. **`vi.mock("isolated-vm", ...)` with a spy.** Mock the module to throw on import, then import the server entry and run server startup. Startup must complete without the mock being triggered. After invoking `execute`, the mock fires. Asserts that the dynamic-import boundary is the only entry point.
-2. **Custom-loader smoke test.** A child-process test that spawns Node with a custom ESM resolve hook plus a **sanitized env** and a `cwd` that's not the project root. Because the `cwd` is moved to a temp directory, every path argument must be absolute — relative paths like `./tests/...` or `dist/index.js` would resolve under the temp `cwd` and not exist. The test resolves both paths against the project root before spawning:
+2. **Custom-loader smoke test.** A child-process test that spawns Node with a custom ESM resolve hook plus a **sanitized env** and a `cwd` that's not the project root. The hook is wired via `node:module`'s `register()` because `--import` only preloads a file; it does NOT automatically treat that file's exported `resolve()` as loader hooks. Two files are required:
+
+   - `tests/integration/no-isolated-vm.register.mjs` — the preload file passed to `--import`. Calls `register()` to install the hooks:
+     ```js
+     // no-isolated-vm.register.mjs
+     import { register } from "node:module";
+     register("./no-isolated-vm.hooks.mjs", import.meta.url);
+     ```
+   - `tests/integration/no-isolated-vm.hooks.mjs` — the actual resolve hook:
+     ```js
+     // no-isolated-vm.hooks.mjs
+     export function resolve(specifier, context, nextResolve) {
+       if (specifier === "isolated-vm") {
+         const err = new Error("Cannot find module 'isolated-vm'");
+         err.code = "ERR_MODULE_NOT_FOUND";
+         throw err;
+       }
+       return nextResolve(specifier, context);
+     }
+     ```
+
+   Because the `cwd` is moved to a temp directory, every path argument must be absolute — relative paths like `./tests/...` or `dist/index.js` would resolve under the temp `cwd` and not exist. The test resolves both paths against the project root before spawning:
    ```ts
    import { spawn } from "node:child_process";
    import { mkdtempSync } from "node:fs";
@@ -424,12 +480,12 @@ So both side effects are unconditional under the default surface — `execute` f
    import path from "node:path";
    import { fileURLToPath } from "node:url";
 
-   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-   const loaderPath  = path.resolve(repoRoot, "tests/integration/no-isolated-vm.loader.mjs");
-   const entrypoint  = path.resolve(repoRoot, "dist/index.js");
-   const tmpCwd      = mkdtempSync(path.join(tmpdir(), "debank-mcp-lazy-"));
+   const repoRoot     = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+   const registerPath = path.resolve(repoRoot, "tests/integration/no-isolated-vm.register.mjs");
+   const entrypoint   = path.resolve(repoRoot, "dist/index.js");
+   const tmpCwd       = mkdtempSync(path.join(tmpdir(), "debank-mcp-lazy-"));
 
-   const child = spawn("node", ["--import", loaderPath, entrypoint, "--legacy-tools"], {
+   const child = spawn("node", ["--import", registerPath, entrypoint, "--legacy-tools"], {
      cwd: tmpCwd,
      env: {
        PATH: process.env.PATH,
@@ -439,7 +495,7 @@ So both side effects are unconditional under the default surface — `execute` f
      },
    });
    ```
-   Vitest `vi.mock("dotenv")` does *not* extend to spawned children — they run real `dotenv.config()` at startup. Setting `cwd` to a fresh `mkdtemp` directory means dotenv's relative `./.env` lookup finds nothing; combined with the sanitized `env` block, no developer-local secrets reach the child. The loader hook ensures `isolated-vm` resolution fails; the server must reach `server.start({transportType: "stdio"})` and respond to a `search_docs` call over stdio. Any `execute` call returns the lazy-load error from §4.4. The loader never modifies `package.json` or `pnpm-lock.yaml`.
+   Vitest `vi.mock("dotenv")` does *not* extend to spawned children — they run real `dotenv.config()` at startup. Setting `cwd` to a fresh `mkdtemp` directory means dotenv's relative `./.env` lookup finds nothing; combined with the sanitized `env` block, no developer-local secrets reach the child. The registered resolve hook makes `isolated-vm` resolution fail with `ERR_MODULE_NOT_FOUND`; the server must reach `server.start({transportType: "stdio"})` and respond to a `search_docs` call over stdio. Any `execute` call returns the lazy-load error from §4.4. The hooks never modify `package.json` or `pnpm-lock.yaml`. Reference: [node:module `register()`](https://nodejs.org/api/module.html).
 
 Both tests live in `tests/integration/lazy-isolated-vm.test.ts`; the loader is in `tests/integration/no-isolated-vm.loader.mjs`.
 
@@ -653,6 +709,7 @@ Use `msw` to mock `pro-openapi.debank.com`. One test per flow:
 - `execute` with intentional throw → inner `{ok: false, error: ...}`, envelope `isError: true`.
 - `execute` with TS syntax → friendly TS-rejection error message.
 - `execute` with a host call that hangs (msw delays >5 s) → per-call timeout fires, inner `{ok: false}` mentions "timed out".
+- `execute` with a never-settling promise that touches no DeBank call: `code: "async function run(){ await new Promise(()=>{}); }"`. The outer `Promise.race` deadline (§2.1 step 5) must fire at ~30 s, dispose the isolate, and return `{ok: false, error: "Execute timed out after 30s…"}` with `isError: true`. Verify the isolate was disposed by re-running an `execute` afterward and observing a fresh `Isolate` was created.
 - `search_docs("get NFTs")` → top result is `getUserNftList`.
 - `--legacy-tools` mode → 30 of 31 legacy tools register (the 31st, `debank_get_supported_chain_list`, comes from the default surface — see §3.1 step 8) and all dispatch through the markdown path.
 
