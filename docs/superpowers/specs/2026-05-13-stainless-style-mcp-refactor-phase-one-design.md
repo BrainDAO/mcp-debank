@@ -507,30 +507,45 @@ Add `vitest` + `@vitest/coverage-v8`. Tests colocated as `*.test.ts`. Add `"test
 | Module | Coverage |
 |---|---|
 | `execute/sandbox.ts` | isolate creation/dispose; 30 s isolate timeout; 5 s per-call host timeout (AbortController fires); 128 MB cap; blocklist catches `process.`, `require(`, `import(`, `eval(`; TS-syntax rejection produces helpful error message; ExternalCopy round-trip preserves shape |
-| `execute/client.ts` | proxy forwards to mocked service `*Raw()` methods; raw JSON returned (no markdown); errors propagate; **all three resolver helpers callable from inside the sandbox**: `debank.resolveChain("BSC")` → `"bsc"`, `debank.resolveChains("Ethereum, Polygon")` → `"eth,matic"` (and `null` if any element fails), `debank.resolveWrappedToken("WETH", "eth")` → the wrapped token address from [chains.ts](../../../src/enums/chains.ts) (and `null` for an unknown chain ID or a chain without a wrapped token) |
+| `execute/client.ts` | proxy forwards to mocked service `*Raw()` methods; raw JSON returned (no markdown); errors propagate; **all three resolver helpers callable from inside the sandbox**. Tests `vi.mock("../../src/lib/entity-resolver", ...)` with a fixed fake so no real Gemini call is ever made: `debank.resolveChain("BSC")` → `"bsc"` (mock returns `"bsc"`), `debank.resolveChains("Ethereum, Polygon")` → `"eth,matic"` (mock returns the comma-joined result; null-on-any-fail branch tested separately), `debank.resolveWrappedToken("WETH", "eth")` → the wrapped token address from [chains.ts](../../../src/enums/chains.ts) (this helper is pure — no LLM — so no mock needed; tests cover `null` for unknown chain ID and `null` for chain without a wrapped token). The point of these tests is that the sandbox proxy *forwards* the calls correctly; resolver accuracy itself is not tested here. |
 | `services/*.service.ts` | each new `*Raw()` method returns parsed JSON; **byte-identical markdown regression for all 31 methods** driven by a shared fixture loader — covers every response-shape variant present in [src/types.ts](../../../src/types.ts): single-object (e.g. `getChain`), flat array (e.g. `getListTokenInformation`, `getUserChainNetCurve` ← returns `NetCurvePoint[]` directly per [user.service.ts:424](../../../src/services/user.service.ts#L424)), nested object containing array (only `getUserTotalNetCurve` returns `{usd_value_list: NetCurvePoint[]}`), and POST body result (`preExecTransaction`, `explainTransaction`). **Single-version harness, not dual-version:** before any service refactor, run each method against its DeBank-API JSON fixture under `tests/fixtures/services/` and commit the resulting markdown to `tests/snapshots/services/<method>.md`. After the refactor, the test asserts `await service.getX(args)` equals that committed snapshot. The snapshot files freeze v0.1's behavior; the running code is always v0.2. |
 | `search-docs/index-builder.ts` | given a sample `tool-metadata.ts` array, produces correct `MethodEntry[]`; Zod → JSON schema conversion runs; cookbook markdown picked up; importing the builder produces no side effects (no `chainService` constructed, no Gemini cache call) |
 | `search-docs/tool.ts` | MiniSearch ordering for "get token balance", "explain tx", "polygon nfts"; `detail=verbose` returns markdown; length cap respected; empty + no-match hint shapes |
-| `mcp/tools.ts` (`debank_resolve`) | "Binance Smart Chain" → "bsc"; "ETH" → "eth"; unknown → `{resolved: null}` |
+| `mcp/tools.ts` (`debank_resolve`) | `vi.mock("../../src/lib/entity-resolver")` returns a stub: `"Binance Smart Chain"` → `"bsc"`, `"ETH"` → `"eth"`, anything else → `null`. The unit test asserts the tool's payload shape (`{resolved: "bsc"}` vs. `{resolved: null, error: "Could not resolve '<name>'…"}`), not the resolver's classifier accuracy. Real-resolver coverage is out of scope — Gemini calls are not exercised in the automated suite. |
 
 ### 5.3 Integration tests (mock DeBank API + isolated env)
 
-**Test environment setup (mandatory boilerplate at the top of every integration test file):**
+**Test environment setup (mandatory boilerplate, wired via vitest `setupFiles`):**
 
 ```ts
-// tests/integration/setup.ts (imported via vitest setupFiles)
-process.env.DEBANK_API_KEY = "test-key";
-delete process.env.IQ_GATEWAY_URL;
-delete process.env.IQ_GATEWAY_KEY;
-delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-delete process.env.OPENROUTER_API_KEY;
+// tests/integration/setup.ts (loaded via vitest config setupFiles)
+import { vi } from "vitest";
+
+// 1. Neutralize dotenv BEFORE env.ts is imported. Default dotenv.config() does
+//    NOT override already-set env vars but DOES populate keys that are undefined
+//    from .env. A developer's local .env could re-introduce IQ_GATEWAY_* or
+//    GOOGLE_GENERATIVE_AI_API_KEY between our `delete` calls and the import of
+//    src/env.ts. Mocking dotenv to a no-op closes that loophole.
+vi.mock("dotenv", () => ({ config: () => ({ parsed: {} }) }));
+
+// 2. Stub the env values env.ts actually validates. vi.stubEnv handles
+//    Vitest's per-worker isolation; the values are auto-restored between tests.
+vi.stubEnv("DEBANK_API_KEY", "test-key");
+vi.stubEnv("IQ_GATEWAY_URL", "");
+vi.stubEnv("IQ_GATEWAY_KEY", "");
+vi.stubEnv("GOOGLE_GENERATIVE_AI_API_KEY", "");
+vi.stubEnv("OPENROUTER_API_KEY", "");
+// Note: env.ts uses `z.string().min(1).optional()` for gateway/LLM keys — an
+// empty string fails .min(1) and the field is then `undefined` after parsing,
+// matching the "unset" branch in base.service.ts:55 and entity-resolver.ts.
 ```
 
 Reasoning:
-- [env.ts:18-29](../../../src/env.ts#L18-L29) fails `import` unless `DEBANK_API_KEY` or both `IQ_GATEWAY_*` are set. Setting a dummy `DEBANK_API_KEY` is the cheapest way to satisfy it.
-- [base.service.ts:55](../../../src/services/base.service.ts#L55) routes through IQ Gateway whenever `IQ_GATEWAY_URL` + `IQ_GATEWAY_KEY` are both present. A developer's local `.env` could leak those into the test process and silently bypass the MSW mock for `pro-openapi.debank.com`. Explicitly deleting them forces the direct-fetch path that MSW intercepts.
-- `GOOGLE_GENERATIVE_AI_API_KEY` + `OPENROUTER_API_KEY` are deleted to prevent any accidental LLM calls (entity resolver, data filter) during integration tests. The resolver returns `null` without a Gemini key, but where a test specifically needs deterministic resolution, mock it explicitly per the bullet below.
-- **Import order matters.** Services must be imported *after* `setup.ts` runs. The vitest `setupFiles` field runs before any test imports — the spec uses that hook, not an inline import in each test.
+- [env.ts:4](../../../src/env.ts#L4) calls `dotenv.config()` at module load. Without the `vi.mock("dotenv")` step, a developer's `.env` file leaks into the test process between our env stubs and env.ts import.
+- [env.ts:18-29](../../../src/env.ts#L18-L29) fails `import` unless `DEBANK_API_KEY` or both `IQ_GATEWAY_*` are set. The dummy `DEBANK_API_KEY` satisfies the refine.
+- [base.service.ts:55](../../../src/services/base.service.ts#L55) routes through IQ Gateway whenever `IQ_GATEWAY_URL` + `IQ_GATEWAY_KEY` are both present. Forcing them to empty strings (which the Zod `.min(1)` rejects → optional field becomes `undefined`) keeps the direct-fetch path that MSW intercepts.
+- `GOOGLE_GENERATIVE_AI_API_KEY` + `OPENROUTER_API_KEY` empty for the same reason — no accidental LLM calls.
+- **Import order matters.** `setupFiles` runs before any test file's imports, and the `vi.mock` call is hoisted by Vitest above all imports in the setup file itself. By the time the first test imports a service, dotenv is already neutered and env vars are stubbed.
 
 Use `msw` to mock `pro-openapi.debank.com`. One test per flow:
 
