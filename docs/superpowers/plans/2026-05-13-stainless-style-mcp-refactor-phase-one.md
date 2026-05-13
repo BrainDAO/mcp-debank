@@ -596,6 +596,16 @@ Create `scripts/snapshot-baseline.ts`:
 // post-refactor regression test (Task 27) asserts the new code reproduces
 // them byte-identical.
 
+// IMPORTANT: env setup MUST happen before any `src/` import. env.ts at
+// module load fails the Zod parse unless DEBANK_API_KEY or both
+// IQ_GATEWAY_* are set (env.ts:18-29). The vitest setupFiles doesn't
+// apply to standalone tsx scripts, so we do the equivalent inline.
+process.env.DEBANK_API_KEY = process.env.DEBANK_API_KEY ?? "snapshot-script";
+delete process.env.IQ_GATEWAY_URL;
+delete process.env.IQ_GATEWAY_KEY;
+delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+delete process.env.OPENROUTER_API_KEY;
+
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -700,10 +710,17 @@ Replace the existing method with two methods. The `*Raw()` form owns network err
 
 ```ts
 // In src/services/chain.service.ts
+// Note: zero-arg raw methods still accept the (_args, options) signature so
+// the generic sandbox dispatcher in execute/client.ts (which always calls
+// raw(args, options)) doesn't drop the options argument when the guest passes
+// no args. The first param is unused but typed for shape consistency.
 
-async getSupportedChainListRaw(options?: RequestOptions): Promise<Chain[]> {
+async getSupportedChainListRaw(
+  _args?: Record<string, never>,
+  options?: RequestOptions,
+): Promise<ChainInfo[]> {
   try {
-    return await this.fetchWithToolConfig<Chain[]>(
+    return await this.fetchWithToolConfig<ChainInfo[]>(
       `${this.baseUrl}/chain/list`,
       config.supportedChainListLifeTime,
       options,
@@ -737,9 +754,9 @@ import { BaseService, type RequestOptions } from "./base.service.js";
 async getChainRaw(
   args: { id: string },
   options?: RequestOptions,
-): Promise<Chain> {
+): Promise<ChainInfo> {
   try {
-    return await this.fetchWithToolConfig<Chain>(
+    return await this.fetchWithToolConfig<ChainInfo>(
       `${this.baseUrl}/chain?id=${args.id}`,
       config.chainDataLifeTime,
       options,
@@ -765,9 +782,9 @@ async getChain(args: { id: string }): Promise<string> {
 async getGasPricesRaw(
   args: { chain_id: string },
   options?: RequestOptions,
-): Promise<GasPrices> {
+): Promise<GasMarket> {
   try {
-    return await this.fetchWithToolConfig<GasPrices>(
+    return await this.fetchWithToolConfig<GasMarket>(
       `${this.baseUrl}/wallet/gas_market?chain_id=${args.chain_id}`,
       config.gasPriceLifeTime,
       options,
@@ -787,7 +804,7 @@ async getGasPrices(args: { chain_id: string }): Promise<string> {
 }
 ```
 
-If any of the URLs or titles above don't match the v0.1 implementation, copy them verbatim from the existing method body — the snapshots are the oracle.
+The types above (`ChainInfo` at [types.ts:13](../../../src/types.ts#L13), `GasMarket` at [types.ts:302](../../../src/types.ts#L302)) match the actual v0.1 definitions. Other services use `ProtocolInfo`, `TokenInfo`, `UserChainBalance`, etc. — always import from `../types.js`. URLs and titles must match v0.1 verbatim (the snapshots are the oracle).
 
 - [ ] **Step 5: Re-run the snapshot regression**
 
@@ -1175,7 +1192,19 @@ export const legacyTools = TOOL_METADATA.map((m: ToolMetadata) => ({
     _userQuery: z.string().optional(),
   }),
   execute: async (args: Record<string, unknown>) => {
-    // Run entity resolution for chain_id / chain_ids / id-as-token-keyword
+    // Per-tool resolve fixups (v0.1 quirks that resolveEntities doesn't cover).
+    // debank_get_chain treats `args.id` as a CHAIN name (not a token); the
+    // generic resolveEntities() only resolves `id` as a token when chain_id
+    // is also present, so this one needs its own pre-step. Reference:
+    // src/tools/index.ts:75-85 (v0.1).
+    if (m.name === "debank_get_chain") {
+      const id = args.id;
+      if (typeof id === "string" && needsResolution(id, "chain")) {
+        const resolved = await resolveChain(id);
+        if (resolved) args.id = resolved;
+      }
+    }
+    // Generic resolution: chain_id, chain_ids, and id-as-token (when chain_id set)
     await resolveEntities(args);
     // Pipe _userQuery into services for JQ-filter context
     const q = args._userQuery as string | undefined;
@@ -1192,7 +1221,7 @@ export const legacyTools = TOOL_METADATA.map((m: ToolMetadata) => ({
 }));
 ```
 
-If `resolveEntities` was previously called only on specific tools, see [src/tools/index.ts](src/tools/index.ts) for the precise call sites and replicate (some tools used `needsResolution(args.id, "chain")` directly). The simplest correct port is: call `resolveEntities(args)` for every tool — it's idempotent and only acts on keys it recognizes.
+If you find any OTHER tool in [src/tools/index.ts](src/tools/index.ts) that resolves `args.id` as a chain (search for `needsResolution(args.id, "chain")`), add an analogous per-tool fixup above. As of v0.1 only `debank_get_chain` does this.
 
 - [ ] **Step 2: Add a smoke test that mocks services and exercises one handler end-to-end**
 
@@ -1213,6 +1242,8 @@ vi.mock("../../services/index.js", () => ({
 vi.mock("../../lib/entity-resolver.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/entity-resolver.js")>()),
   resolveEntities: vi.fn(async () => {}),
+  resolveChain: vi.fn(async () => null),
+  needsResolution: vi.fn(() => true),
 }));
 
 describe("tool-handlers.legacyTools", () => {
@@ -1233,6 +1264,21 @@ describe("tool-handlers.legacyTools", () => {
     expect(tool).toBeDefined();
     const result = await tool!.execute({ _userQuery: "test" });
     expect(result).toBe("# chains");
+  });
+
+  it("debank_get_chain resolves args.id as a chain name (v0.1 quirk)", async () => {
+    // Override the resolver mock to simulate "Ethereum" → "eth"
+    const resolverMod = await import("../../lib/entity-resolver.js");
+    vi.mocked(resolverMod.resolveChain).mockResolvedValueOnce("eth");
+    const servicesMod = await import("../../services/index.js");
+    const getChain = vi.fn(async () => "# eth markdown");
+    (servicesMod.chainService as unknown as Record<string, unknown>).getChain = getChain;
+
+    const tool = legacyTools.find((t) => t.name === "debank_get_chain");
+    expect(tool).toBeDefined();
+    await tool!.execute({ id: "Ethereum" });
+    // The handler should have rewritten args.id to "eth" before calling chainService.getChain
+    expect(getChain).toHaveBeenCalledWith(expect.objectContaining({ id: "eth" }));
   });
 });
 ```
@@ -1638,7 +1684,10 @@ async function getIvm() {
 }
 
 const ISOLATE_MEMORY_MB = 128;
-const SCRIPT_DEADLINE_MS = 30_000;
+// Test-overridable for fast CI: `DEBANK_MCP_SANDBOX_DEADLINE_MS=1000`. Production
+// callers leave it unset and get 30 s per the spec. This is a test-time knob,
+// not a public configuration surface — README intentionally omits it.
+const SCRIPT_DEADLINE_MS = Number(process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS) || 30_000;
 const BLOCKLIST = ["process.", "require(", "import(", "eval("];
 
 export type SandboxResult = {
@@ -1716,7 +1765,9 @@ export async function runInSandbox(
       new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => {
           dispose();
-          reject(new Error("Execute timed out after 30s. No call to settle, or guest stuck in a non-yielding loop."));
+          reject(new Error(
+            `Execute timed out after ${Math.round(SCRIPT_DEADLINE_MS / 1000)}s. No call to settle, or guest stuck in a non-yielding loop.`,
+          ));
         }, SCRIPT_DEADLINE_MS);
         timeoutHandle.unref?.();
       }),
@@ -1963,13 +2014,34 @@ export const executeTool = {
   parameters: PARAMS,
   annotations: { readOnlyHint: false },
   execute: async (args: z.infer<typeof PARAMS>) => {
-    // Lazy-load sandbox + client to keep isolated-vm out of the startup graph
-    const [{ runInSandbox }, { installDebankClient }] = await Promise.all([
-      import("./sandbox.js"),
-      import("./client.js"),
-    ]);
-
-    const sandboxResult = await runInSandbox(args.code, installDebankClient);
+    // Lazy-load sandbox + client. Any failure here (most notably the
+    // native isolated-vm addon failing to load on Alpine/ARM/older Node)
+    // must surface as the canonical {ok:false} response from spec §4.4 —
+    // NOT propagate as an unhandled rejection out of executeTool.
+    let sandboxResult: import("./sandbox.js").SandboxResult;
+    try {
+      const [{ runInSandbox }, { installDebankClient }] = await Promise.all([
+        import("./sandbox.js"),
+        import("./client.js"),
+      ]);
+      sandboxResult = await runInSandbox(args.code, installDebankClient);
+    } catch (err) {
+      // Two classes of failure reach here:
+      // 1. isolated-vm native addon failed to load (ERR_MODULE_NOT_FOUND
+      //    or "Module did not self-register" or similar native errors).
+      // 2. sandbox.ts itself threw before/after the inner try/finally.
+      const msg = err instanceof Error ? err.message : String(err);
+      const isLoadFailure =
+        /isolated-vm|MODULE_NOT_FOUND|self-register|cannot find module/i.test(msg);
+      sandboxResult = {
+        ok: false,
+        error: isLoadFailure
+          ? `isolated-vm native module failed to load. On Alpine/ARM/older Node, run 'pnpm rebuild isolated-vm'. Original error: ${msg}`
+          : msg,
+        log_lines: [],
+        err_lines: err instanceof Error && err.stack ? [err.stack] : [],
+      };
+    }
 
     // MCP envelope: outer isError mirrors !ok
     const inner = JSON.stringify(sandboxResult);
@@ -1981,7 +2053,43 @@ export const executeTool = {
 };
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Add a unit test for the load-failure path**
+
+Create `src/mcp/execute/tool.test.ts`:
+
+```ts
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("./sandbox.js", () => ({
+  runInSandbox: vi.fn(async () => {
+    const err = new Error("Cannot find module 'isolated-vm'") as Error & { code?: string };
+    err.code = "ERR_MODULE_NOT_FOUND";
+    throw err;
+  }),
+}));
+
+describe("executeTool error envelope", () => {
+  it("isolated-vm load failure → canonical message in {ok:false}", async () => {
+    const { executeTool } = await import("./tool.js");
+    const res = await executeTool.execute({ code: "async function run(){}" });
+    const inner = JSON.parse(res.content[0]!.text);
+    expect(res.isError).toBe(true);
+    expect(inner.ok).toBe(false);
+    expect(inner.error).toContain("isolated-vm native module failed to load");
+    expect(inner.error).toContain("pnpm rebuild isolated-vm");
+  });
+});
+```
+
+- [ ] **Step 3: Run + commit**
+
+Run: `pnpm exec vitest run src/mcp/execute/tool.test.ts`
+Expected: PASS, 1 test.
+
+```bash
+git add src/mcp/execute/tool.ts src/mcp/execute/tool.test.ts
+git commit -m "feat(mcp/execute): execute tool catches isolated-vm load failure with canonical message"
+```
 
 ```bash
 git add src/mcp/execute/tool.ts
@@ -2429,13 +2537,32 @@ describe("execute integration", () => {
   });
 
   it("never-settling promise → outer race fires with canonical message", async () => {
-    const res = await executeTool.execute({
-      code: `async function run(){ await new Promise(() => {}); }`,
-    });
-    const inner = JSON.parse(res.content[0]!.text);
-    expect(res.isError).toBe(true);
-    expect(inner.error).toContain("Execute timed out after 30s");
-  }, 35_000);
+    // Override the deadline so the test takes ~1s instead of the production 30s.
+    // sandbox.ts reads DEBANK_MCP_SANDBOX_DEADLINE_MS at module load, so the
+    // override must be set BEFORE the sandbox module is imported. setup.ts
+    // (loaded via vitest setupFiles) runs first; we set it here for the
+    // specific test and import a fresh sandbox/tool module.
+    const prev = process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS;
+    process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS = "1000";
+    vi.resetModules();   // force fresh import of sandbox.ts with the new env
+    try {
+      const { executeTool: fast } = await import("../../src/mcp/execute/tool.js");
+      const res = await fast.execute({
+        code: `async function run(){ await new Promise(() => {}); }`,
+      });
+      const inner = JSON.parse(res.content[0]!.text);
+      expect(res.isError).toBe(true);
+      // Message says "30s" — that wording is the spec contract; the deadline
+      // override is a test-only knob. If the implementation interpolates the
+      // actual ms, change this to match.
+      expect(inner.error).toContain("Execute timed out after");
+      expect(inner.error.toLowerCase()).toMatch(/no call to settle|non-yielding/);
+    } finally {
+      if (prev === undefined) delete process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS;
+      else process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS = prev;
+      vi.resetModules();
+    }
+  }, 5_000);
 
   it("DeBank request that hangs >5s → canonical per-call timeout error", async () => {
     server.use(
