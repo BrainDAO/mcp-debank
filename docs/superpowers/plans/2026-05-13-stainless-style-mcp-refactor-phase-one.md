@@ -82,11 +82,48 @@ Expected: all four added to `devDependencies`.
 Run:
 ```bash
 grep zod-to-json-schema package.json
-node -e "import('zod').then(z=>import('zod-to-json-schema').then(m=>console.log(typeof m.zodToJsonSchema(z.z.object({a:z.z.string()})))))"
+node -e "
+import('zod').then(zMod => import('zod-to-json-schema').then(jMod => {
+  const schema = jMod.zodToJsonSchema(zMod.z.object({ a: zMod.z.string() }), { target: 'openApi3' });
+  // Strong probe: assert the converter actually traversed the Zod tree and
+  // emitted a usable JSON Schema, not just any object. A broken Zod-4 path
+  // can return an empty {} or {properties: {}}, which would later flow into
+  // params: in the docs index and silently degrade search.
+  if (!schema || typeof schema !== 'object') throw new Error('not an object');
+  if (!schema.properties || !schema.properties.a) throw new Error('missing properties.a');
+  if (schema.properties.a.type !== 'string') throw new Error('properties.a.type !== string');
+  console.log('ok');
+}))
+"
 ```
 
 Expected first command: `"zod-to-json-schema": "^3.25.1"` shows in devDependencies.
-Expected second command: prints `object` (schema produced). If it errors, the plan will switch to Zod 4's built-in `z.toJSONSchema()` in Task 11 — note the outcome and proceed.
+Expected second command: prints `ok`. Any other output or non-zero exit means the converter is incompatible with the installed Zod version. If that happens, switch the import in `scripts/build-docs-index.ts` (Task 15) to Zod 4's built-in:
+
+```ts
+import { z } from "zod";
+// ...
+params: z.toJSONSchema(m.parameters),
+```
+
+…and drop the `zod-to-json-schema` dependency.
+
+**Post-build sanity check (run after Task 15 produces `embedded-index.ts`):**
+
+```bash
+node -e "
+import('./dist/mcp/search-docs/embedded-index.js').then(({ ENTRIES }) => {
+  const chain = ENTRIES.find(e => e.kind === 'method' && e.name === 'debank_get_chain');
+  if (!chain) { console.error('debank_get_chain not in index'); process.exit(1); }
+  const p = chain.params;
+  if (!p?.properties?.id?.type) { console.error('id param missing or untyped'); process.exit(1); }
+  if (p.properties._userQuery) { console.error('_userQuery should have been stripped'); process.exit(1); }
+  console.log('ok');
+})
+"
+```
+
+Expected: `ok`. Catches the silent-degradation scenario where the schema converter returns shape-but-no-fields.
 
 - [ ] **Step 4: Commit dep additions**
 
@@ -2549,6 +2586,61 @@ describe("debank_resolve", () => {
     );
   });
 });
+
+describe("debank_get_supported_chain_list (default surface)", () => {
+  // Spec §3.1 step 8: legacy mode SKIPS this tool as a duplicate, so this
+  // default implementation is the one users get under both modes. Its
+  // behavior must be byte-identical to v0.1 src/tools/index.ts:52-62.
+
+  it("accepts _userQuery and pipes setQuery into ALL services before the call", async () => {
+    const servicesMod = await import("../services/index.js");
+    const setQueryChain = vi.spyOn(servicesMod.chainService, "setQuery");
+    const setQueryProtocol = vi.spyOn(servicesMod.protocolService, "setQuery");
+    const setQueryToken = vi.spyOn(servicesMod.tokenService, "setQuery");
+    const setQueryTransaction = vi.spyOn(servicesMod.transactionService, "setQuery");
+    const setQueryUser = vi.spyOn(servicesMod.userService, "setQuery");
+    const getList = vi.spyOn(servicesMod.chainService, "getSupportedChainList")
+      .mockResolvedValue("# Supported Chains\n\n* eth\n* bsc");
+
+    const { supportedChainListTool } = await import("./tools.js");
+    const res = await supportedChainListTool.execute({ _userQuery: "my query" });
+
+    // Every service got the query (v0.1 setQueryFromArgs semantics)
+    expect(setQueryChain).toHaveBeenCalledWith("my query");
+    expect(setQueryProtocol).toHaveBeenCalledWith("my query");
+    expect(setQueryToken).toHaveBeenCalledWith("my query");
+    expect(setQueryTransaction).toHaveBeenCalledWith("my query");
+    expect(setQueryUser).toHaveBeenCalledWith("my query");
+
+    // The chain service was called and its markdown is returned verbatim
+    expect(getList).toHaveBeenCalledTimes(1);
+    expect(res.isError).toBe(false);
+    expect(res.content[0]!.text).toBe("# Supported Chains\n\n* eth\n* bsc");
+  });
+
+  it("works without _userQuery (no setQuery calls)", async () => {
+    const servicesMod = await import("../services/index.js");
+    const setQueryChain = vi.spyOn(servicesMod.chainService, "setQuery").mockClear();
+    vi.spyOn(servicesMod.chainService, "getSupportedChainList").mockResolvedValue("# Chains");
+
+    const { supportedChainListTool } = await import("./tools.js");
+    const res = await supportedChainListTool.execute({});
+
+    expect(setQueryChain).not.toHaveBeenCalled();
+    expect(res.content[0]!.text).toBe("# Chains");
+  });
+
+  it("description and schema match v0.1 verbatim", async () => {
+    const { supportedChainListTool } = await import("./tools.js");
+    // v0.1 description from src/tools/index.ts:54
+    expect(supportedChainListTool.description).toBe(
+      "Retrieve a comprehensive list of all blockchain chains supported by the DeBank API. Returns information about each chain including their IDs, names, logo URLs, native token IDs, wrapped token IDs, and pre-execution support status. Use this to discover available chains before calling other chain-specific endpoints.",
+    );
+    // Schema accepts only _userQuery (optional)
+    const shape = (supportedChainListTool.parameters as unknown as { shape?: Record<string, unknown> }).shape;
+    expect(Object.keys(shape ?? {})).toEqual(["_userQuery"]);
+  });
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2645,7 +2737,7 @@ export const defaultConvenienceTools = [resolveTool, supportedChainListTool];
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm exec vitest run src/mcp/tools.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 6 tests (3 debank_resolve cases + 3 debank_get_supported_chain_list preservation cases).
 
 - [ ] **Step 5: Commit**
 
@@ -3121,20 +3213,46 @@ describe("lazy isolated-vm", () => {
     // legacy tools also registered because --legacy-tools was passed
     expect(toolNames).toContain("debank_get_user_chain_balance");
 
-    // 4. tools/call execute — this is the path that actually needs isolated-vm.
+    // 4. tools/call search_docs — must succeed under the no-isolated-vm
+    // loader hook. The spec §4.4 contract says other tools (search_docs,
+    // debank_resolve, debank_get_supported_chain_list) are unaffected by
+    // isolated-vm being unloadable; only execute returns the load-failure
+    // payload. Asserting search_docs works here proves the lazy-loading
+    // boundary is correct — server reached server.start, the index built,
+    // and a real query returns results.
+    send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "search_docs",
+        arguments: { query: "get token balance" },
+      },
+    });
+    const searchResponse = await waitForId(3, 5_000) as {
+      result?: { content?: { type: string; text: string }[]; isError?: boolean };
+    };
+    expect(searchResponse.result?.isError).toBe(false);
+    const searchInner = JSON.parse(searchResponse.result?.content?.[0]?.text ?? "{}") as {
+      results?: { name?: string }[];
+    };
+    expect(searchInner.results?.length).toBeGreaterThan(0);
+    expect(searchInner.results?.some((r) => r.name === "debank_get_user_token_balance")).toBe(true);
+
+    // 5. tools/call execute — this is the path that actually needs isolated-vm.
     // The resolve hook makes `import("isolated-vm")` throw ERR_MODULE_NOT_FOUND,
     // so executeTool's catch (Task 19) MUST emit the canonical native-load
     // payload. Asserts the full lazy-loading contract end-to-end.
     send({
       jsonrpc: "2.0",
-      id: 3,
+      id: 4,
       method: "tools/call",
       params: {
         name: "execute",
         arguments: { code: "async function run(){ return 1; }" },
       },
     });
-    const execResponse = await waitForId(3, 5_000) as {
+    const execResponse = await waitForId(4, 5_000) as {
       result?: { content?: { type: string; text: string }[]; isError?: boolean };
     };
     expect(execResponse.result?.isError).toBe(true);
