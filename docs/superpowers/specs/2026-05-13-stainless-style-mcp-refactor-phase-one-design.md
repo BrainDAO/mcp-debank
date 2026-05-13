@@ -42,6 +42,7 @@ Prior analysis identified that the gaps DeBank fills today (LLM entity resolutio
 | 8 | Default tool surface = `execute` + `search_docs` + `debank_resolve` + `debank_get_supported_chain_list` (~4 tools) | Strict 2-tool was the alternative; convenience tools save the agent from writing code just to call one helper |
 | 9 | `execute` runs **JavaScript** (not TypeScript) | `isolated-vm` evaluates raw V8 code; V8 does not parse TS syntax. Adding esbuild/sucrase transpilation is a deferred enhancement |
 | 10 | Each in-sandbox `debank` method gets its own host-side wall-clock timeout (5 s default) via `AbortController` + axios `timeout` option | `isolated-vm`'s script timeout only fires when V8 reclaims control. A stalled DeBank request awaited inside the script could outlive the 30 s isolate budget without per-call cancellation |
+| 11 | `BaseService.fetchWithToolConfig` / `postWithToolConfig` and their `fetchDirect` / `fetchViaGateway` / `postDirect` / `postViaGateway` callees gain a new `options?: RequestOptions` parameter that flows through to axios | Required to actually cancel in-flight requests. `Promise.race` rejects locally but cannot abort an outstanding axios call without a `signal` reaching the underlying `http.request`. `RequestOptions = { signal?: AbortSignal; timeout?: number }`. Adding the parameter is non-breaking for the legacy path (default = `undefined`) |
 
 ## §1. Architecture
 
@@ -64,7 +65,7 @@ src/
 │   ├── instructions/
 │   │   └── instructions.md   (NEW: hand-authored, ~200 lines)
 │   └── legacy/
-│       ├── tool-metadata.ts  (NEW: side-effect-free {name, description, parameters, serviceMethodPath} entries)
+│       ├── tool-metadata.ts  (NEW: side-effect-free {name, description, parameters, legacyMethodPath, sandboxMethodPath} entries)
 │       └── tool-handlers.ts  (MOVED from src/tools/index.ts: joins metadata + service singletons)
 ├── services/                 (MODIFIED: each method gains a *Raw() variant — see §2.2)
 ├── lib/                      (UNCHANGED)
@@ -143,16 +144,42 @@ debank = {
 
 **The raw-data layer** — required because `fetchWithToolConfig` and `formatResponse` are `protected` in [base.service.ts:50, :118, :188](../../../src/services/base.service.ts):
 
-Each existing service method (e.g., `ChainService.getChain`) is split into two:
+**Step 1: thread `RequestOptions` through the base service.** Today `fetchWithToolConfig` takes only `(url, cacheDuration)` and the axios calls inside `fetchDirect` / `fetchViaGateway` / `postDirect` / `postViaGateway` set no `timeout` or `signal` ([base.service.ts:85, :111, :135, :157](../../../src/services/base.service.ts#L85)). We add a new parameter to all five functions:
+
+```ts
+// In base.service.ts
+export type RequestOptions = { signal?: AbortSignal; timeout?: number };
+
+protected async fetchWithToolConfig<T>(
+  url: string,
+  cacheDuration = this.DEFAULT_CACHE_TTL_SECONDS,
+  options?: RequestOptions,                       // NEW
+): Promise<T> { /* forwards to fetchDirect/fetchViaGateway */ }
+
+private async fetchDirect<T>(url: string, options?: RequestOptions): Promise<T> {
+  const response = await axios.get<T>(url, {
+    headers,
+    ...(options?.signal ? { signal: options.signal } : {}),
+    ...(options?.timeout ? { timeout: options.timeout } : {}),
+  });
+  /* ... */
+}
+// Same change applied to fetchViaGateway, postWithToolConfig, postDirect, postViaGateway.
+```
+
+Default `options = undefined` ⇒ axios behaves exactly as today ⇒ legacy path is byte-identical.
+
+**Step 2: split each service method.** Each existing method (e.g., `ChainService.getChain`) becomes two:
 
 ```ts
 // In src/services/chain.service.ts
 class ChainService extends BaseService {
-  // NEW: public raw method — returns parsed JSON
-  async getChainRaw(args: { id: string }): Promise<ChainData> {
+  // NEW: public raw method — returns parsed JSON, accepts options
+  async getChainRaw(args: { id: string }, options?: RequestOptions): Promise<ChainData> {
     return this.fetchWithToolConfig<ChainData>(
       `${this.baseUrl}/chain?id=${args.id}`,
       config.chainDataLifeTime,
+      options,
     );
   }
 
@@ -164,17 +191,16 @@ class ChainService extends BaseService {
 }
 ```
 
-The 28 legacy tools call `getChain`. The sandbox calls `getChainRaw`. Both share the same network/cache code path. No duplication of URL building.
+The 28 legacy tools call `getChain` (no options ⇒ no timeout, current behavior). The sandbox calls `getChainRaw(args, { signal, timeout: 5000 })`. Both share the same network/cache code path.
 
-**How the proxy is wired:**
-
-Each `*Raw()` method is exposed inside the isolate as an `isolated-vm` `Reference` to a host-side function. Per call:
+**Step 3: wire the proxy with an end-to-end AbortController.** Each `*Raw()` method is exposed inside the isolate as an `isolated-vm` `Reference` to a host-side function. Per call:
 
 - Args are copied across the V8 boundary via `ExternalCopy` (`isolated-vm`'s primitive — handles plain objects, arrays, primitives; not class instances or functions).
-- The host function invokes the service's `*Raw()` method **wrapped in `Promise.race` with a 5 s host-side `AbortController` timeout** (see Decision #10). The axios call inside also gets `timeout: 5000`.
+- The host function creates a fresh `AbortController`, schedules `controller.abort()` at `5000 ms` via `setTimeout`, and calls `service.getChainRaw(args, { signal: controller.signal, timeout: 5000 })`. Both signal and timeout are passed — signal cancels the in-flight TCP/TLS request, axios `timeout` is a belt-and-braces backup for the response-read phase.
+- On rejection, the host function wraps the error with a `"DeBank call timed out after 5s: <method>"` message if the rejection was due to abort/timeout; otherwise propagates the original error.
 - The parsed JSON return is copied back into the isolate via `ExternalCopy`.
 
-The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolation without needing `worker_threads`). The 30 s outer timeout is `isolated-vm`'s built-in script timeout; the 5 s per-call inner timeout is ours.
+The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolation without needing `worker_threads`). The 30 s outer timeout is `isolated-vm`'s built-in script timeout; the 5 s per-call inner timeout is the `AbortController` above.
 
 ### 2.3 `search_docs` tool — `src/mcp/search-docs/`
 
@@ -200,18 +226,21 @@ The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolat
 
 ```ts
 {
-  name: "debank_get_user_chain_balance",       // legacy tool name
-  qualified: "debank.user.getUserChainBalance", // sandbox call path
-  serviceMethodPath: "user.getUserChainBalanceRaw", // resolved at handler-wire time
+  name: "debank_get_user_chain_balance",          // legacy tool name (used by --legacy-tools registrations)
+  qualified: "debank.user.getUserChainBalance",   // human-facing sandbox call path (what agent writes)
+  legacyMethodPath: "user.getUserChainBalance",   // markdown-returning method; used by tool-handlers.ts
+  sandboxMethodPath: "user.getUserChainBalanceRaw", // JSON-returning method; used by execute proxy
   description: "...",
-  parameters: ZodSchema,                       // converted to JSON schema via zod-to-json-schema at index-build time
+  parameters: ZodSchema,                          // converted to JSON schema via zod-to-json-schema at index-build time
   exampleCall: "await debank.user.getUserChainBalance({chain_id: 'eth', id: '0x...'})"
 }
 ```
 
+`legacyMethodPath` and `sandboxMethodPath` are deliberately split so the metadata module stays unambiguous about *which method runs in which path*. The docs index displays the `qualified` form (what agents write); the search hit can also include `exampleCall` verbatim.
+
 The builder walks the metadata array, converts each `parameters` Zod schema to JSON schema, pulls hand-written cookbook entries from `src/mcp/search-docs/cookbook/*.md`, and writes `embedded-index.ts` exporting `const ENTRIES: MethodEntry[]`. The runtime constructs MiniSearch with the same options CoinGecko uses: `prefix: true, fuzzy: 0.1, boost: {name: 5, qualified: 3, summary: 2}`.
 
-**The handler module** (`src/mcp/legacy/tool-handlers.ts`) joins each metadata entry to its service singleton's method at server-start time — keeping side effects out of the metadata file. This is what gets registered with FastMCP only when `--legacy-tools` is set.
+**The handler module** (`src/mcp/legacy/tool-handlers.ts`) joins each metadata entry to its service singleton using `legacyMethodPath` at server-start time — keeping side effects out of the metadata file. The sandbox proxy (`src/mcp/execute/client.ts`) joins using `sandboxMethodPath`.
 
 ### 2.4 Convenience tools — `src/mcp/tools.ts`
 
@@ -244,14 +273,26 @@ Registered with FastMCP only when `--legacy-tools` is set or `DEBANK_MCP_LEGACY=
 
 ### 3.1 Cold start
 
+**Eager vs. lazy at startup — what gets constructed:**
+
+Service singletons and the entity resolver are **always constructed at startup**, regardless of the `--legacy-tools` flag, because the default tool surface itself depends on them:
+- `execute` injects the singletons as the in-sandbox `debank` client.
+- `debank_resolve` calls `entityResolver.resolveChain` (which transitively triggers `initializeCacheManager` per [src/lib/cache/cache-manager.ts](../../../src/lib/cache/cache-manager.ts)).
+- `debank_get_supported_chain_list` calls `chainService.getSupportedChainList`.
+
+Today these are eager via `services/index.ts` module-load side effects ([services/index.ts:22-26](../../../src/services/index.ts#L22-L26)). Phase one preserves that behavior — eager construction matches today's startup cost. The only thing the `--legacy-tools` flag toggles is the additional import of `src/mcp/legacy/tool-handlers.ts` to register the 28 handlers with FastMCP. The `isolated-vm` `Isolate` is the one piece that stays lazy (first `execute` call constructs it).
+
+**Cold-start sequence:**
+
 1. [src/index.ts](../../../src/index.ts) `main()` parses CLI flags (`--legacy-tools`, `DEBANK_MCP_LEGACY` env).
 2. Read `src/mcp/instructions/instructions.md` into memory.
-3. Construct `FastMCP({name, version, instructions})`.
-4. Register `execute`, `search_docs`, `debank_resolve`, `debank_get_supported_chain_list`.
-5. If `--legacy-tools`, also import and register the 28 from `src/mcp/legacy/tool-handlers.ts` (which is when the entity resolver + service singletons get constructed).
-6. Initialize MiniSearch from `embedded-index.ts` once.
-7. Lazy-init the `isolated-vm` `Isolate` on first `execute` call.
+3. Read `version` from `package.json` (see §6) and construct `FastMCP({name, version, instructions})`.
+4. Import `src/services/index.ts` (eager singleton construction; this also primes the entity resolver's chain cache via `initializeCacheManager`, fire-and-forget). This happens whether or not `--legacy-tools` is set.
+5. Initialize MiniSearch from `embedded-index.ts` (one in-process index, no I/O after this).
+6. Register the four default tools: `execute`, `search_docs`, `debank_resolve`, `debank_get_supported_chain_list`.
+7. If `--legacy-tools` or `DEBANK_MCP_LEGACY=1`: dynamically `import("./mcp/legacy/tool-handlers.js")` and register the 28 handlers. (Static `import` would be fine too — services already constructed, no additional side effects.)
 8. `server.start({transportType: "stdio"})`.
+9. On first `execute` call: construct the `isolated-vm` `Isolate` (lazy).
 
 ### 3.2 `execute` call
 
@@ -421,6 +462,43 @@ Use `msw` to mock `pro-openapi.debank.com`. One test per flow:
 
 Add `.github/workflows/test.yml` running `pnpm test` on push. Existing `pnpm lint` (biome) stays.
 
+## §5b. Build pipeline + dependencies
+
+### Build script changes
+
+Today's [package.json:14](../../../package.json#L14) is `"build": "tsc && shx chmod +x dist/index.js"` — no codegen step. Phase one adds:
+
+```jsonc
+{
+  "scripts": {
+    "build:docs":  "tsx scripts/build-docs-index.ts",
+    "prebuild":    "pnpm run build:docs",
+    "build":       "tsc && shx chmod +x dist/index.js",
+    "test":        "vitest run",
+    "test:watch":  "vitest"
+  }
+}
+```
+
+`scripts/build-docs-index.ts` is the index builder from §2.3 — invoked via `tsx` so it can `import` the side-effect-free `src/mcp/legacy/tool-metadata.ts` without `tsc` having run yet. Output `src/mcp/search-docs/embedded-index.ts` is committed (mirrors CoinGecko's approach — the index ships in the npm package).
+
+### New dependencies
+
+**Runtime:**
+- `isolated-vm` — sandbox.
+- `minisearch` — docs index.
+
+**Dev:**
+- `vitest` + `@vitest/coverage-v8` — test framework.
+- `msw` — DeBank API mocking in tests.
+- `tsx` — running the docs-index builder script without a separate compile step.
+
+`zod-to-json-schema` is already a dev dep in [package.json:52](../../../package.json#L52); we just start using it in the index builder.
+
+### Native module note
+
+`isolated-vm` is a native Node module. It ships prebuilds for common platforms but can require `node-gyp` and a C++ toolchain on Alpine, ARM, or older Node versions. README will document the fallback `pnpm rebuild isolated-vm`.
+
 ## §6. Release plan
 
 **This is a breaking change.** Hiding the 28 `debank_*` tools by default removes them from the wire surface that existing v0.1.x consumers' MCP clients see. Any agent prompt or client config naming a specific `debank_*` tool stops working until the user adds `--legacy-tools`. Communicating that clearly is more important than the version number we choose.
@@ -428,6 +506,7 @@ Add `.github/workflows/test.yml` running `pnpm test` on push. Existing `pnpm lin
 Under semver, a 0.x package is allowed to break in minor bumps, so `0.2.0` is technically valid. The framing — not the digit — is what matters.
 
 - **Version:** `0.2.0`. Changeset entry uses `minor` bump type but explicitly labels the breaking change in the description, in line with semver-for-0.x conventions.
+- **FastMCP server version drift.** Today [src/index.ts:29](../../../src/index.ts#L29) hardcodes `version: "1.0.0"` on the FastMCP server while [package.json:3](../../../package.json#L3) says `0.1.1`. Phase one fixes this: `src/index.ts` reads `version` from `package.json` at startup (via `createRequire(import.meta.url)('../package.json').version` or equivalent). The FastMCP server version then tracks the package version automatically — `0.2.0` on release.
 - **Changeset content:** lead with `**Breaking change:** the 28 \`debank_*\` tools are now hidden by default. Pass \`--legacy-tools\` or set \`DEBANK_MCP_LEGACY=1\` to restore them. New tools: \`execute\`, \`search_docs\`, \`debank_resolve\`, \`debank_get_supported_chain_list\`.`
 - **README:** new "Code Mode" section with worked examples; "Migrating from v0.1.x" section showing the `--legacy-tools` escape hatch; deprecation notice on the 28-tool list.
 - **CHANGELOG.md:** auto-generated by changesets, but verify the breaking-change call-out lands at the top of the entry.
