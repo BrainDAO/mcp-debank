@@ -113,27 +113,40 @@ src/
 2. Spin up an `isolated-vm` `Isolate` with a 128 MB memory cap, create a fresh `Context`.
 3. Inject the `debank` proxy object (see §2.2). Inject `console.log / warn / error` stubs that pipe to captured buffers in the host.
 4. Compile `(async () => { ${code}\nreturn await run(debank); })()` as a script via `isolate.compileScript(...)`. **`isolated-vm` does not transpile TypeScript** — V8 will throw `SyntaxError` on type annotations.
-5. Run the script with explicit transfer options **plus an outer host-side wall-clock `Promise.race`**. The `timeout` on `script.run` only guards V8 script-execution time; once the IIFE returns a Promise, isolated-vm hands it back to the host (because of `promise: true`), and the inner Promise can hang forever — e.g., `async function run(){ await new Promise(() => {}); }` never settles, doesn't touch DeBank (so the §2.2 per-call timeout never fires), and the isolate timeout doesn't apply because V8 yielded long ago. The host must enforce its own deadline:
+5. Run the script with explicit transfer options **plus an outer host-side wall-clock `Promise.race`**. The `timeout` on `script.run` only guards V8 script-execution time; once the IIFE returns a Promise, isolated-vm hands it back to the host (because of `promise: true`), and the inner Promise can hang forever — e.g., `async function run(){ await new Promise(() => {}); }` never settles, doesn't touch DeBank (so the §2.2 per-call timeout never fires), and the isolate timeout doesn't apply because V8 yielded long ago. The host must enforce its own deadline. The timer handle is captured and cleared on the success path so a successful `execute` doesn't leave a 30 s pending callback (which would also call `dispose()` on an already-disposed isolate — harmless but noisy, and breaks tests under fake timers):
 
    ```ts
    const SCRIPT_DEADLINE_MS = 30_000;
 
-   const value = await Promise.race([
-     script.run(context, {
-       timeout: SCRIPT_DEADLINE_MS,   // guards V8 script execution
-       promise: true,                 // host awaits the IIFE's Promise
-       copy: true,                    // copy resolved value across the V8 boundary
-     }),
-     new Promise<never>((_, reject) => {
-       setTimeout(() => {
-         isolate.dispose();           // free V8 resources promptly
-         reject(new Error("Execute timed out after 30s. No call to settle, or guest stuck in a non-yielding loop."));
-       }, SCRIPT_DEADLINE_MS).unref?.();
-     }),
-   ]);
+   // Idempotent dispose — safe to call multiple times.
+   let disposed = false;
+   const dispose = () => { if (!disposed) { disposed = true; isolate.dispose(); } };
+
+   let timeoutHandle: NodeJS.Timeout | undefined;
+   try {
+     const value = await Promise.race([
+       script.run(context, {
+         timeout: SCRIPT_DEADLINE_MS,   // guards V8 script execution
+         promise: true,                 // host awaits the IIFE's Promise
+         copy: true,                    // copy resolved value across the V8 boundary
+       }),
+       new Promise<never>((_, reject) => {
+         timeoutHandle = setTimeout(() => {
+           dispose();   // free V8 resources promptly
+           reject(new Error("Execute timed out after 30s. No call to settle, or guest stuck in a non-yielding loop."));
+         }, SCRIPT_DEADLINE_MS);
+         timeoutHandle.unref?.();
+       }),
+     ]);
+     // success: cancel the pending wall-clock timer and dispose normally
+     return value;
+   } finally {
+     if (timeoutHandle) clearTimeout(timeoutHandle);
+     dispose();
+   }
    ```
 
-   Without the outer race, a never-settling guest Promise would hang the host indefinitely. Disposing the isolate on timeout is required to release the V8 heap. Reference: [isolated-vm docs](https://www.npmjs.com/package/isolated-vm) — `timeout` is documented for script execution, `promise` for promise proxying; neither gives a wall-clock guarantee on the resolved value.
+   Without `clearTimeout`, every successful `execute` leaves a pending callback that eventually fires `dispose()` on the already-disposed isolate 30 s later. Idempotent dispose (`disposed` flag) makes the double-call safe; the `clearTimeout` makes it not happen in the first place. Reference: [isolated-vm docs](https://www.npmjs.com/package/isolated-vm) — `timeout` is documented for script execution, `promise` for promise proxying; neither gives a wall-clock guarantee on the resolved value.
 
    Without `promise: true`, the host receives a Reference to the unresolved Promise — not the resolved JSON value. Without an explicit `copy` (or `externalCopy`) result mode, transferring complex returns can fail or come back as a Reference the host can't directly serialize. (`TransferOptions` flags are positive — there's no `reference: false`; you simply pick one of `copy`, `externalCopy`, or `reference` to set true.) Same `TransferOptions` rules apply to each `ivm.Callback` return in §2.2 (where we use `new ivm.ExternalCopy(result)`).
 
@@ -229,7 +242,7 @@ class ChainService extends BaseService {
 }
 ```
 
-The 31 legacy tools call `getChain` (no options ⇒ no timeout, current behavior). The sandbox calls `getChainRaw(args, { signal, timeout: 5000 })`. Both share the same network/cache code path. The sandbox proxy adds a second wrapper layer that converts AbortController rejections into the `"DeBank call timed out after 5s: <method>"` message (see Step 3) — messages may stack, which is fine.
+The 31 legacy tools call `getChain` (no options ⇒ no timeout, current behavior). The sandbox calls `getChainRaw(args, { signal, timeout: 6_000 })` — axios timeout is 6 s while the AbortController is set to 5 s, so the abort wins under normal conditions (see Step 3). Both share the same network/cache code path. The sandbox proxy converts both abort and axios-timeout rejections into the canonical `"DeBank call timed out after 5s: <method>"` message.
 
 **Intentional error-string refinement, not strict byte-identical preservation.** Today's single catch wraps every error path (fetch *and* format) with `"Failed to fetch X"`. After the split, fetch failures keep that wording while formatter failures get `"Failed to format X response"`. This is an intentional improvement — the v0.1 wording is misleading on `toMarkdown` failures (says "fetch" but fetch succeeded). Log consumers that scrape on `"Failed to fetch"` will still match all fetch errors; only the (rare) formatter-failure log lines change. If a future caller needs strict byte-identical log strings, the wrapper catch can switch to the v0.1 message — but phase one prefers accuracy.
 
@@ -323,7 +336,12 @@ await context.evalClosure(
 
 **Resolver helpers** (`debank.resolveChain`, `debank.resolveChains`, `debank.resolveWrappedToken`) are wired the same way: each is an `ivm.Callback`. `resolveChain` / `resolveChains` are async and use `{ async: true }`; `resolveWrappedToken` is synchronous (pure `chains.ts` lookup) so it uses `{ async: false }` (the default).
 
-The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolation without needing `worker_threads`). The 30 s outer timeout is `isolated-vm`'s built-in script timeout; the 5 s per-call inner timeout is the `AbortController` above.
+The isolate runs in the main Node thread (`isolated-vm` provides V8-level isolation without needing `worker_threads`). **Three layered timers, not one:**
+1. `script.run({ timeout: 30_000 })` — guards V8 script-execution time inside the isolate. Fires if the guest body never yields (e.g., infinite synchronous loop).
+2. Outer host-side `Promise.race` deadline at 30 s (§2.1 step 5) — guards never-settling Promises the guest awaits. Disposes the isolate on fire.
+3. Per-`debank.*` call 5 s `AbortController` (above) — guards stalled DeBank/IQ Gateway requests inside an active call. Axios `timeout: 6_000` is the belt-and-braces backup.
+
+The §2.1 outer race is the only one that gives a true wall-clock guarantee; the `script.run` timeout alone does not, which is the round-20 bug-fix.
 
 ### 2.3 `search_docs` tool — `src/mcp/search-docs/`
 
@@ -497,7 +515,7 @@ So both side effects are unconditional under the default surface — `execute` f
    ```
    Vitest `vi.mock("dotenv")` does *not* extend to spawned children — they run real `dotenv.config()` at startup. Setting `cwd` to a fresh `mkdtemp` directory means dotenv's relative `./.env` lookup finds nothing; combined with the sanitized `env` block, no developer-local secrets reach the child. The registered resolve hook makes `isolated-vm` resolution fail with `ERR_MODULE_NOT_FOUND`; the server must reach `server.start({transportType: "stdio"})` and respond to a `search_docs` call over stdio. Any `execute` call returns the lazy-load error from §4.4. The hooks never modify `package.json` or `pnpm-lock.yaml`. Reference: [node:module `register()`](https://nodejs.org/api/module.html).
 
-Both tests live in `tests/integration/lazy-isolated-vm.test.ts`; the loader is in `tests/integration/no-isolated-vm.loader.mjs`.
+Both tests live in `tests/integration/lazy-isolated-vm.test.ts`. The loader is split into `tests/integration/no-isolated-vm.register.mjs` (the `--import` target that calls `node:module`'s `register()`) and `tests/integration/no-isolated-vm.hooks.mjs` (the actual `resolve` hook that throws `ERR_MODULE_NOT_FOUND` on `isolated-vm`).
 
 ### 3.2 `execute` call
 
@@ -519,7 +537,7 @@ execute/tool.ts:
   4. eval `(async () => { ${code}; return run(debank); })()` with isolated-vm timeout=30000
      - inside isolate: run() calls d.user.getUserChainBalance twice in parallel
      - each call crosses isolate boundary → host invokes userService.getUserChainBalanceRaw(args)
-       wrapped in Promise.race with a 5 s AbortController; axios timeout: 5000 also set
+       wrapped with a 5 s AbortController; axios timeout: 6000 (strictly larger so abort wins first)
      - the Raw method hits IQ Gateway (cached 5min) or DeBank API direct via fetchWithToolConfig
      - response JSON parsed, returned as ExternalCopy back into isolate
      - run() awaits both, returns { polygon: 12345.67, bsc: 8901.23 }
