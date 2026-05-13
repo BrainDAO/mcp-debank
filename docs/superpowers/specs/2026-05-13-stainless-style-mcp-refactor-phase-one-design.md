@@ -513,13 +513,30 @@ Add `vitest` + `@vitest/coverage-v8`. Tests colocated as `*.test.ts`. Add `"test
 | `search-docs/tool.ts` | MiniSearch ordering for "get token balance", "explain tx", "polygon nfts"; `detail=verbose` returns markdown; length cap respected; empty + no-match hint shapes |
 | `mcp/tools.ts` (`debank_resolve`) | "Binance Smart Chain" → "bsc"; "ETH" → "eth"; unknown → `{resolved: null}` |
 
-### 5.3 Integration tests (mock DeBank API)
+### 5.3 Integration tests (mock DeBank API + isolated env)
+
+**Test environment setup (mandatory boilerplate at the top of every integration test file):**
+
+```ts
+// tests/integration/setup.ts (imported via vitest setupFiles)
+process.env.DEBANK_API_KEY = "test-key";
+delete process.env.IQ_GATEWAY_URL;
+delete process.env.IQ_GATEWAY_KEY;
+delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+delete process.env.OPENROUTER_API_KEY;
+```
+
+Reasoning:
+- [env.ts:18-29](../../../src/env.ts#L18-L29) fails `import` unless `DEBANK_API_KEY` or both `IQ_GATEWAY_*` are set. Setting a dummy `DEBANK_API_KEY` is the cheapest way to satisfy it.
+- [base.service.ts:55](../../../src/services/base.service.ts#L55) routes through IQ Gateway whenever `IQ_GATEWAY_URL` + `IQ_GATEWAY_KEY` are both present. A developer's local `.env` could leak those into the test process and silently bypass the MSW mock for `pro-openapi.debank.com`. Explicitly deleting them forces the direct-fetch path that MSW intercepts.
+- `GOOGLE_GENERATIVE_AI_API_KEY` + `OPENROUTER_API_KEY` are deleted to prevent any accidental LLM calls (entity resolver, data filter) during integration tests. The resolver returns `null` without a Gemini key, but where a test specifically needs deterministic resolution, mock it explicitly per the bullet below.
+- **Import order matters.** Services must be imported *after* `setup.ts` runs. The vitest `setupFiles` field runs before any test imports — the spec uses that hook, not an inline import in each test.
 
 Use `msw` to mock `pro-openapi.debank.com`. One test per flow:
 
 - `execute` happy path → inner `{ok: true, result: ...}`, envelope `isError: false`.
 - `execute` parallel calls → both succeed.
-- `execute` with `debank.resolveChain` inside → "Polygon" → "matic" → balance call uses "matic".
+- `execute` with `debank.resolveChain` inside — **mock the resolver**, not Gemini. Use `vi.mock("../../src/lib/entity-resolver", () => ({ resolveChain: async (n: string) => n === "Polygon" ? "matic" : null, ... }))`. Then assert: input `"Polygon"` → resolved `"matic"` → balance call uses `chain_id: "matic"`. No real LLM call ever made.
 - `execute` with intentional throw → inner `{ok: false, error: ...}`, envelope `isError: true`.
 - `execute` with TS syntax → friendly TS-rejection error message.
 - `execute` with a host call that hangs (msw delays >5 s) → per-call timeout fires, inner `{ok: false}` mentions "timed out".
