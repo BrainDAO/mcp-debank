@@ -1149,12 +1149,12 @@ describe("tool-metadata side-effect-freeness", () => {
 });
 ```
 
-Note: this test depends on `dist/mcp/legacy/tool-metadata.js` existing — which `pretest` builds. The child process consumes the compiled JS, not the TS source.
+Note: this test depends on `dist/mcp/legacy/tool-metadata.js` existing. `pretest` builds it, so the test must be run via `pnpm test` (not `pnpm exec vitest run ...` — that bypasses `pretest` and can either fail on a missing `dist/` or, worse, pass against stale compiled output).
 
 - [ ] **Step 4: Run the test**
 
-Run: `pnpm exec vitest run src/mcp/legacy/tool-metadata.test.ts`
-Expected: PASS, 4 tests.
+Run: `pnpm test src/mcp/legacy/tool-metadata.test.ts`
+Expected: `pretest` builds `dist/`, then vitest runs — PASS, 4 tests (3 in-process + 1 child-process). Using `pnpm test` (not `pnpm exec vitest`) is required so `pretest` fires and the child-process test sees a fresh `dist/mcp/legacy/tool-metadata.js`.
 
 - [ ] **Step 5: Commit**
 
@@ -2050,11 +2050,182 @@ export async function installDebankClient(ctx: import("isolated-vm").Context): P
 }
 ```
 
-- [ ] **Step 2: Commit (client unit-test exercises this via Task 22's integration)**
+- [ ] **Step 2: Add the focused forwarding unit test**
+
+The full integration test in Task 23 exercises the sandbox end-to-end with MSW, but a fast unit test catches `sandboxMethodPath` typos, accidental `Raw` leakage into the guest, and resolver-helper regressions without spinning up MSW. Create `src/mcp/execute/client.test.ts`:
+
+```ts
+// src/mcp/execute/client.test.ts
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Partial mock so resolveWrappedToken keeps its real chains.ts lookup.
+// .js extension matches the runtime import string (NodeNext project).
+vi.mock("../../lib/entity-resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/entity-resolver.js")>();
+  return {
+    ...actual,
+    resolveChain: vi.fn(async (n: string) => (n === "BSC" ? "bsc" : null)),
+    resolveChains: vi.fn(async (cs: string) =>
+      cs === "Ethereum, Polygon" ? "eth,matic" : null,
+    ),
+  };
+});
+
+describe("execute/client.ts proxy forwarding", () => {
+  let isolate: import("isolated-vm").Isolate | undefined;
+
+  beforeEach(async () => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    try { isolate?.dispose(); } catch { /* idempotent */ }
+    isolate = undefined;
+  });
+
+  it("naming asymmetry: guest debank.user.getUserChainBalance dispatches to userService.getUserChainBalanceRaw", async () => {
+    // Spy on the *Raw method on the real singleton
+    const servicesMod = await import("../../services/index.js");
+    const rawSpy = vi.spyOn(
+      servicesMod.userService as unknown as { getUserChainBalanceRaw: (...a: unknown[]) => Promise<unknown> },
+      "getUserChainBalanceRaw",
+    ).mockResolvedValue({ usd_value: 42 } as never);
+
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => { return await debank.user.getUserChainBalance({chain_id:"eth", id:"0xabc"}); })()`,
+    );
+    const result = await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+
+    expect(rawSpy).toHaveBeenCalledTimes(1);
+    expect(rawSpy).toHaveBeenCalledWith(
+      { chain_id: "eth", id: "0xabc" },
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeout: 6_000 }),
+    );
+    expect(result).toEqual({ usd_value: 42 });
+  });
+
+  it("guest cannot see the Raw suffix — debank.user.getUserChainBalanceRaw is undefined", async () => {
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => { return typeof debank.user.getUserChainBalanceRaw; })()`,
+    );
+    const t = await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+    expect(t).toBe("undefined");
+  });
+
+  it("debank.resolveChain forwards to the mocked resolver", async () => {
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => { return await debank.resolveChain("BSC"); })()`,
+    );
+    expect(await script.run(ctx, { timeout: 5_000, promise: true, copy: true })).toBe("bsc");
+  });
+
+  it("debank.resolveChains forwards and returns the joined string", async () => {
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => { return await debank.resolveChains("Ethereum, Polygon"); })()`,
+    );
+    expect(await script.run(ctx, { timeout: 5_000, promise: true, copy: true })).toBe("eth,matic");
+  });
+
+  it("debank.resolveWrappedToken uses the REAL chains.ts lookup (no mock)", async () => {
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => { return debank.resolveWrappedToken("WETH", "eth"); })()`,
+    );
+    const wethAddr = await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+    // Real chains.ts lookup — eth chain's wrappedTokenId is the canonical WETH address
+    expect(typeof wethAddr).toBe("string");
+    expect(wethAddr).toMatch(/^0x[a-f0-9]{40}$/i);
+
+    // null path: unknown chain ID
+    const script2 = await isolate.compileScript(
+      `(async () => { return debank.resolveWrappedToken("WETH", "definitely_not_a_chain"); })()`,
+    );
+    expect(await script2.run(ctx, { timeout: 5_000, promise: true, copy: true })).toBeNull();
+  });
+
+  it("errors from *Raw propagate through the Callback boundary", async () => {
+    const servicesMod = await import("../../services/index.js");
+    vi.spyOn(
+      servicesMod.userService as unknown as { getUserChainBalanceRaw: (...a: unknown[]) => Promise<unknown> },
+      "getUserChainBalanceRaw",
+    ).mockRejectedValue(new Error("upstream 503") as never);
+
+    const mod = await import("isolated-vm");
+    const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ?? mod);
+    isolate = new ivm.Isolate({ memoryLimit: 64 });
+    const ctx = await isolate.createContext();
+    await ctx.global.set("debank", new ivm.ExternalCopy({}).copyInto({ release: true }));
+
+    const { installDebankClient } = await import("./client.js");
+    await installDebankClient(ctx);
+
+    const script = await isolate.compileScript(
+      `(async () => {
+        try { await debank.user.getUserChainBalance({chain_id:"eth", id:"0xabc"}); return "no-error"; }
+        catch (e) { return e.message; }
+      })()`,
+    );
+    const msg = await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+    expect(msg).toBe("upstream 503");
+  });
+});
+```
+
+- [ ] **Step 3: Run + commit**
+
+Run: `pnpm test src/mcp/execute/client.test.ts`
+
+(`pnpm test` so `pretest` builds dist/ — `isolated-vm` is a native addon and works fine from source via vitest's transformer, but the test imports the real `services/index.js` which transitively touches `entity-resolver.js`; running through `pnpm test` ensures the vitest setupFiles also apply.)
+
+Expected: PASS, 6 tests.
 
 ```bash
-git add src/mcp/execute/client.ts
-git commit -m "feat(mcp/execute): add debank-client installer with dual-timeout Callbacks"
+git add src/mcp/execute/client.ts src/mcp/execute/client.test.ts
+git commit -m "feat(mcp/execute): add debank-client installer with dual-timeout Callbacks; unit-test forwarding contract"
 ```
 
 ---
@@ -2986,7 +3157,7 @@ Run: `pnpm test tests/integration/lazy-isolated-vm.test.ts`
 
 Expected: PASS, 1 test.
 
-If the test times out trying to read the JSON-RPC response, simplify it to just verify the child process didn't crash on startup. The asserted invariant is "isolated-vm not in resolve graph at startup" — the child not crashing demonstrates that.
+**Do not weaken this test if it times out.** The spec §4.4 explicitly requires that with `isolated-vm` unresolvable, the child must respond to `initialize`/`tools/list` AND `tools/call execute` must return `isError: true` with the canonical native-load message. If the harness times out, fix the stdio framing or response-parsing — do not drop the `tools/call execute` assertion. Common gotchas: FastMCP stdio uses newline-delimited JSON-RPC; the response may arrive split across multiple `data` events (the harness loop already handles this); stderr log lines are sometimes routed to stdout under certain Node versions (the harness `try { JSON.parse }` swallows those — fine).
 
 - [ ] **Step 4: Commit**
 
