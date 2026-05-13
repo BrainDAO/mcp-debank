@@ -1303,12 +1303,56 @@ describe("tool-handlers.legacyTools", () => {
     expect(getChain).toHaveBeenCalledWith(expect.objectContaining({ id: "eth" }));
   });
 });
+
+describe("TOOL_METADATA method-path resolution", () => {
+  // The runtime dispatcher in tool-handlers.ts and execute/client.ts looks up
+  // methods by parsing the dotted strings `legacyMethodPath` / `sandboxMethodPath`
+  // out of TOOL_METADATA. A typo in one of the 31 entries (e.g. "getUsrChainBalance"
+  // instead of "getUserChainBalance") passes the shape tests above and only fails
+  // when an agent calls that specific tool. This test resolves every declared
+  // path against the real service singletons and asserts the methods exist as
+  // functions — catches the entire typo class.
+
+  it("every legacyMethodPath and sandboxMethodPath resolves to a callable on its singleton", async () => {
+    // Note: tool-handlers.test.ts already mocks "../../services/index.js" to
+    // replace the singletons with vi.fn() stubs. Those stubs have only the
+    // methods explicitly added by the mock factory. To exercise the REAL
+    // singletons we need to bypass the mock — vi.importActual.
+    const realServices = await vi.importActual<typeof import("../../services/index.js")>(
+      "../../services/index.js",
+    );
+    const { TOOL_METADATA } = await vi.importActual<typeof import("./tool-metadata.js")>(
+      "./tool-metadata.js",
+    );
+
+    const SERVICE_MAP: Record<string, Record<string, unknown>> = {
+      chainService: realServices.chainService as unknown as Record<string, unknown>,
+      protocolService: realServices.protocolService as unknown as Record<string, unknown>,
+      tokenService: realServices.tokenService as unknown as Record<string, unknown>,
+      transactionService: realServices.transactionService as unknown as Record<string, unknown>,
+      userService: realServices.userService as unknown as Record<string, unknown>,
+    };
+
+    const resolve = (path: string): unknown => {
+      const [singletonName, methodName] = path.split(".");
+      const singleton = SERVICE_MAP[singletonName!];
+      return singleton?.[methodName!];
+    };
+
+    for (const m of TOOL_METADATA) {
+      const legacyFn = resolve(m.legacyMethodPath);
+      const rawFn = resolve(m.sandboxMethodPath);
+      expect(typeof legacyFn, `legacyMethodPath ${m.legacyMethodPath} (tool ${m.name})`).toBe("function");
+      expect(typeof rawFn, `sandboxMethodPath ${m.sandboxMethodPath} (tool ${m.name})`).toBe("function");
+    }
+  });
+});
 ```
 
 - [ ] **Step 3: Run the test**
 
 Run: `pnpm exec vitest run src/mcp/legacy/tool-handlers.test.ts`
-Expected: PASS, 4 tests (count, shape, dispatch, debank_get_chain regression).
+Expected: PASS, 5 tests (count, shape, dispatch, debank_get_chain regression, every method-path resolves).
 
 - [ ] **Step 4: Commit**
 
@@ -1813,10 +1857,20 @@ export async function runInSandbox(
     // doesn't install timer globals by default. Inject a sleep(ms) Callback
     // capped at SCRIPT_DEADLINE_MS so guest code can't burn the whole budget
     // on a single sleep. The outer Promise.race deadline still wins.
+    //
+    // console: guest joins all args into a single space-separated string
+    // BEFORE crossing the boundary. Otherwise applyIgnored spreads `a` as
+    // positional args to the host callback, and the callback's
+    // `(line: string)` signature drops everything after the first arg —
+    // execute is supposed to return console output, so dropped args =
+    // silently lost log lines.
     await context.evalClosure(
-      `globalThis.console = { log: (...a) => $0.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))),
-                              warn: (...a) => $0.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))),
-                              error: (...a) => $1.applyIgnored(undefined, a.map(x => typeof x === 'string' ? x : JSON.stringify(x))) };
+      `const __fmt = (a) => a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+       globalThis.console = {
+         log:   (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
+         warn:  (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
+         error: (...a) => $1.applyIgnored(undefined, [__fmt(a)]),
+       };
        globalThis.sleep = (ms) => $2.apply(undefined, [ms], { result: { promise: true } });`,
       [
         new ivm.Reference((line: string) => logLines.push(line)),
@@ -1925,12 +1979,70 @@ describe("runInSandbox blocklist", () => {
     expect(r.error).toContain("Blocked identifier: 'eval('");
   });
 });
+
+describe("runInSandbox guest globals", () => {
+  it("sleep(ms) is available and resolves", async () => {
+    const start = Date.now();
+    const r = await runInSandbox(
+      `async function run(){ await sleep(20); return "slept"; }`,
+      async () => {},
+    );
+    const elapsed = Date.now() - start;
+    expect(r.ok).toBe(true);
+    expect(r.result).toBe("slept");
+    expect(elapsed).toBeGreaterThanOrEqual(15);   // allow for scheduler jitter
+  });
+
+  it("sleep(ms) is clamped — sleep(99999999) does not exceed the outer deadline", async () => {
+    // Override the script deadline to 1s for this test only.
+    const prev = process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS;
+    process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS = "1000";
+    vi.resetModules();
+    try {
+      const { runInSandbox: rs } = await import("./sandbox.js");
+      const start = Date.now();
+      const r = await rs(
+        `async function run(){ await sleep(99999999); return "never"; }`,
+        async () => {},
+      );
+      const elapsed = Date.now() - start;
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain("Execute timed out");
+      expect(elapsed).toBeLessThan(2_000);   // outer race fires at ~1s; allow margin
+    } finally {
+      if (prev === undefined) delete process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS;
+      else process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS = prev;
+      vi.resetModules();
+    }
+  }, 5_000);
+
+  it("console.log captures multi-arg calls joined with spaces", async () => {
+    const r = await runInSandbox(
+      `async function run(){ console.log("hello", "world", 42); return null; }`,
+      async () => {},
+    );
+    expect(r.ok).toBe(true);
+    expect(r.log_lines).toEqual(["hello world 42"]);
+  });
+
+  it("console.error captures separately from console.log", async () => {
+    const r = await runInSandbox(
+      `async function run(){ console.log("a"); console.error("b"); return null; }`,
+      async () => {},
+    );
+    expect(r.ok).toBe(true);
+    expect(r.log_lines).toEqual(["a"]);
+    expect(r.err_lines).toEqual(["b"]);
+  });
+});
 ```
+
+Add `vi` to the import line at the top of the file: `import { describe, it, expect, vi } from "vitest";`.
 
 - [ ] **Step 3: Run the test**
 
 Run: `pnpm exec vitest run src/mcp/execute/sandbox.test.ts`
-Expected: PASS, 4 tests.
+Expected: PASS, 8 tests (4 blocklist + 4 guest globals: sleep happy path, sleep clamp/deadline, console.log multi-arg join, console.error separation).
 
 - [ ] **Step 4: Commit**
 
