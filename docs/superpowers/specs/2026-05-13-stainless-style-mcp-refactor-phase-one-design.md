@@ -38,7 +38,7 @@ Prior analysis identified that the gaps DeBank fills today (LLM entity resolutio
 | 4 | Docs index source of truth = side-effect-free tool **metadata** module derived from [src/tools/index.ts](../../../src/tools/index.ts) | Already LLM-targeted SDK docs; walking pure metadata at build time avoids triggering service singleton init / openrouter wiring / Gemini cache. A real DeBank OpenAPI spec is the long-term move but deferred |
 | 5 | 28 legacy tools hidden by default; opt-in via `--legacy-tools` flag | Default UX matches CoinGecko's 2-tool shape; existing consumers have a one-flag escape hatch. **This is a breaking change** — see §6 Release plan |
 | 6 | Keep entity resolver as-is; expose in sandbox as `debank.resolveChain()` | Zero churn; instructions teach common mappings so the resolver is now mostly a long-tail fallback |
-| 7 | Each service grows a `*Raw()` method that returns parsed JSON; existing public method becomes `formatResponse(await thisRaw())` | Required because `fetchWithToolConfig` and `formatResponse` are `protected` ([base.service.ts:50, :188](../../../src/services/base.service.ts)). Sandbox calls `*Raw()`; legacy 28 tools keep the markdown-returning entrypoints |
+| 7 | Each service grows a `*Raw()` method that returns parsed JSON (literal API shape, no transformation). The existing public method delegates to `*Raw()` then formats, with one catch per phase (`*Raw()` catches network/HTTP, the wrapper catches `formatResponse` failures), each with its own contextual `logAndWrapError` message | Required because `fetchWithToolConfig` and `formatResponse` are `protected` ([base.service.ts:50, :188](../../../src/services/base.service.ts)). Sandbox calls `*Raw()`; legacy 28 tools keep the markdown-returning entrypoints. Dual catch preserves contextual logging for both error sources — see §2.2 Step 2 |
 | 8 | Default tool surface = `execute` + `search_docs` + `debank_resolve` + `debank_get_supported_chain_list` (~4 tools) | Strict 2-tool was the alternative; convenience tools save the agent from writing code just to call one helper |
 | 9 | `execute` runs **JavaScript** (not TypeScript) | `isolated-vm` evaluates raw V8 code; V8 does not parse TS syntax. Adding esbuild/sucrase transpilation is a deferred enhancement |
 | 10 | Each in-sandbox `debank` method gets its own host-side wall-clock timeout (5 s default) via `AbortController` + axios `timeout` option | `isolated-vm`'s script timeout only fires when V8 reclaims control. A stalled DeBank request awaited inside the script could outlive the 30 s isolate budget without per-call cancellation |
@@ -202,9 +202,32 @@ class ChainService extends BaseService {
 }
 ```
 
-The 28 legacy tools call `getChain` (no options ⇒ no timeout, current behavior). The sandbox calls `getChainRaw(args, { signal, timeout: 5000 })`. Both share the same network/cache code path and the same contextual error messages. The sandbox proxy adds a second wrapper layer that converts AbortController rejections into the `"DeBank call timed out after 5s: <method>"` message (see Step 3) — messages may stack, which is fine.
+The 28 legacy tools call `getChain` (no options ⇒ no timeout, current behavior). The sandbox calls `getChainRaw(args, { signal, timeout: 5000 })`. Both share the same network/cache code path. The sandbox proxy adds a second wrapper layer that converts AbortController rejections into the `"DeBank call timed out after 5s: <method>"` message (see Step 3) — messages may stack, which is fine.
+
+**Intentional error-string refinement, not strict byte-identical preservation.** Today's single catch wraps every error path (fetch *and* format) with `"Failed to fetch X"`. After the split, fetch failures keep that wording while formatter failures get `"Failed to format X response"`. This is an intentional improvement — the v0.1 wording is misleading on `toMarkdown` failures (says "fetch" but fetch succeeded). Log consumers that scrape on `"Failed to fetch"` will still match all fetch errors; only the (rare) formatter-failure log lines change. If a future caller needs strict byte-identical log strings, the wrapper catch can switch to the v0.1 message — but phase one prefers accuracy.
 
 **The refactor applies uniformly to all five services and all 28 methods.** Test plan §5.2 covers the regression with one byte-identical-markdown test per method (all 28), driven by a shared fixture loader so it's mechanical to maintain.
+
+**Rule for transformed methods — `*Raw()` always returns the literal parsed API response, never a partial projection.** Today exactly one method ([user.service.ts:451](../../../src/services/user.service.ts#L451)) unwraps before formatting: `getUserTotalNetCurve` fetches `{usd_value_list: NetCurvePoint[]}` and formats `data.usd_value_list`. The split preserves this:
+
+```ts
+// Returns the literal DeBank wrapper, NOT just usd_value_list
+async getUserTotalNetCurveRaw(args, options?): Promise<{ usd_value_list: NetCurvePoint[] }> {
+  try {
+    return await this.fetchWithToolConfig<{usd_value_list: NetCurvePoint[]}>(url, ttl, options);
+  } catch (error) { throw logAndWrapError(`Failed to fetch total net curve for user ${args.id}`, error); }
+}
+
+// Wrapper unwraps for formatResponse (today's behavior)
+async getUserTotalNetCurve(args): Promise<string> {
+  const data = await this.getUserTotalNetCurveRaw(args);
+  try {
+    return await this.formatResponse(data.usd_value_list, { title: "...", currencyFields: ["usd_value"] });
+  } catch (error) { throw logAndWrapError(`Failed to format total net curve for user ${args.id} response`, error); }
+}
+```
+
+**Consequence for sandbox + docs index:** `debank.user.getUserTotalNetCurve` (the agent-facing name) returns `{usd_value_list: [...]}` — the wrapper, not the bare list. The `cookbook` example for net-curve queries must show `(await debank.user.getUserTotalNetCurve({id})).usd_value_list` so agents don't trip over the wrapping. `search_docs` indexes the `params` and `response` fields from the metadata entry; the `response` field for this method is `{ usd_value_list: { timestamp: number; usd_value: number }[] }`. No other service method does shape-changing pre-format work — checked via `grep "formatResponse(data\\.\\|formatResponse(rawData\\." src/services/*.service.ts` which returns only this one site.
 
 **Step 3: wire the proxy with an end-to-end AbortController.** Each `*Raw()` method is exposed inside the isolate as an `isolated-vm` `Reference` to a host-side function. Per call:
 
@@ -323,7 +346,14 @@ So both side effects are unconditional under the default surface — `execute` f
 9. `server.start({transportType: "stdio"})`.
 10. **First `execute` call**: load the `isolated-vm` Node addon if not already loaded, construct a fresh `Isolate` for the call, and dispose it on completion. **Each subsequent `execute` call constructs its own fresh `Isolate`** — there is no shared/pooled isolate.
 
-**Implementation note — keeping the load truly lazy.** `isolated-vm` is a native addon; any synchronous `import "isolated-vm"` anywhere in the static import graph from `src/index.ts` loads the addon at startup, defeating step 10. The implementation **must** dynamic-import inside the execute handler — `const ivm = await import("isolated-vm")` on first call, cached in a module-level variable for subsequent calls. The same rule applies transitively: `src/mcp/execute/sandbox.ts` must not be statically imported by any module reachable from server startup; it is itself loaded via `await import()` inside the `execute` tool handler in `src/mcp/execute/tool.ts`. Tests verify this by importing the server entry and asserting `require.cache` does not contain `isolated-vm` until an `execute` call runs.
+**Implementation note — keeping the load truly lazy.** `isolated-vm` is a native addon; any synchronous `import "isolated-vm"` anywhere in the static import graph from `src/index.ts` loads the addon at startup, defeating step 10. The implementation **must** dynamic-import inside the execute handler — `const ivm = await import("isolated-vm")` on first call, cached in a module-level variable for subsequent calls. The same rule applies transitively: `src/mcp/execute/sandbox.ts` must not be statically imported by any module reachable from server startup; it is itself loaded via `await import()` inside the `execute` tool handler in `src/mcp/execute/tool.ts`.
+
+**Testing the laziness in an ESM project.** The package is `"type": "module"` ([package.json:6](../../../package.json#L6)), so `require.cache` is not the right probe — ESM uses the loader's module map, not CommonJS's cache. Two stronger tests:
+
+1. **`vi.mock("isolated-vm", ...)` with a spy.** Mock the module to throw on import, then import the server entry and run server startup. Startup must complete without the mock being triggered. After invoking `execute`, the mock fires. Asserts that the dynamic-import boundary is the only entry point.
+2. **Missing-addon smoke test.** A CI job that uninstalls `isolated-vm` (`pnpm rm isolated-vm`) and runs `node dist/index.js --legacy-tools` — the server must start, register tools, and respond to a `search_docs` call. Any `execute` call returns the lazy-load error from §4.4. This catches accidental static imports that a mock might miss.
+
+Both tests live in `tests/integration/lazy-isolated-vm.test.ts`.
 
 ### 3.2 `execute` call
 
