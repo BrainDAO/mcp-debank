@@ -1573,7 +1573,7 @@ If unsure, call `debank_resolve` or `await debank.resolveChain("...")` inside `e
 The DeBank API uses offset-based pagination via `start` and `limit` (or `page_count` for history). Always paginate inside a single `execute` block — variables don't persist between calls.
 
 ### Error handling
-Throw or return errors — the runtime maps both to `{ok: false, error: ...}`. **The server does NOT retry upstream errors on your behalf.** If a `debank.*` call fails, decide whether to retry from your own code. For transient errors (network blip, DeBank 429, 5xx) a short `for`-loop with a small delay is fine; for hard 4xx errors retrying is pointless. Variables don't persist between `execute` calls, so put any retry loop inside one `execute` body.
+**Throw** to indicate failure: uncaught exceptions from `run(debank)` are caught by the runtime and returned as `{ok: false, error: <message>}` with `isError: true` in the MCP envelope. **Returning** an error-shaped object (e.g. `return { error: "..." }`) is a *successful* result — the runtime wraps it as `{ok: true, result: { error: "..." }}` and the agent sees no failure signal. If something genuinely failed, `throw`. **The server does NOT retry upstream errors on your behalf.** If a `debank.*` call fails, decide whether to retry from your own code. For transient errors (network blip, DeBank 429, 5xx) a short `for`-loop with a small delay is fine; for hard 4xx errors retrying is pointless. Variables don't persist between `execute` calls, so put any retry loop inside one `execute` body.
 
 Example pattern:
 
@@ -1940,8 +1940,13 @@ function resolveRaw(methodPath: string): (args: unknown, options: { signal: Abor
   return (args, options) => fn.call(singleton, args, options);
 }
 
-/** Wrap a *Raw() call with the dual-timeout machinery and canonical timeout error. */
+/** Wrap a *Raw() call with the dual-timeout machinery, canonical timeout error,
+ *  AND the spec-required ExternalCopy result transfer. Returning a plain JS
+ *  value from an ivm.Callback works for primitives but is fragile for complex
+ *  objects — wrapping in ExternalCopy is the explicit transfer mode per spec
+ *  §2.2 step 3 ("The return value is wrapped in ivm.ExternalCopy"). */
 function makeTimeoutWrapped(
+  ivm: typeof import("isolated-vm"),
   rawFn: (args: unknown, options: { signal: AbortSignal; timeout: number }) => Promise<unknown>,
   agentFacingName: string,
 ) {
@@ -1949,7 +1954,8 @@ function makeTimeoutWrapped(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ABORT_MS);
     try {
-      return await rawFn(args, { signal: controller.signal, timeout: AXIOS_MS });
+      const result = await rawFn(args, { signal: controller.signal, timeout: AXIOS_MS });
+      return new ivm.ExternalCopy(result);
     } catch (err) {
       const e = err as Error & { code?: string };
       const isAbort = controller.signal.aborted;
@@ -1987,22 +1993,23 @@ export async function installDebankClient(ctx: import("isolated-vm").Context): P
   for (const m of TOOL_METADATA) {
     const [group, method] = parseQualified(m.qualified);
     const raw = resolveRaw(m.sandboxMethodPath);
-    const wrapped = makeTimeoutWrapped(raw, m.qualified);
+    const wrapped = makeTimeoutWrapped(ivm, raw, m.qualified);
     await ctx.evalClosure(
       `globalThis.debank.${group}.${method} = $0;`,
       [new ivm.Callback(wrapped as (args: unknown) => Promise<unknown>, { async: true })],
     );
   }
 
-  // Resolver helpers (top-level on debank)
+  // Resolver helpers (top-level on debank). Returns are wrapped in
+  // ExternalCopy for the same boundary-contract reason as method returns.
   await ctx.evalClosure(
     `globalThis.debank.resolveChain = $0;
      globalThis.debank.resolveChains = $1;
      globalThis.debank.resolveWrappedToken = $2;`,
     [
-      new ivm.Callback(async (name: string) => resolveChain(name), { async: true }),
-      new ivm.Callback(async (cs: string) => resolveChains(cs), { async: true }),
-      new ivm.Callback((kw: string, chainId: string) => resolveWrappedToken(kw, chainId)),
+      new ivm.Callback(async (name: string) => new ivm.ExternalCopy(await resolveChain(name)), { async: true }),
+      new ivm.Callback(async (cs: string) => new ivm.ExternalCopy(await resolveChains(cs)), { async: true }),
+      new ivm.Callback((kw: string, chainId: string) => new ivm.ExternalCopy(resolveWrappedToken(kw, chainId))),
     ],
   );
 }
@@ -2907,6 +2914,29 @@ describe("lazy isolated-vm", () => {
     expect(toolNames).toContain("debank_get_supported_chain_list");
     // legacy tools also registered because --legacy-tools was passed
     expect(toolNames).toContain("debank_get_user_chain_balance");
+
+    // 4. tools/call execute — this is the path that actually needs isolated-vm.
+    // The resolve hook makes `import("isolated-vm")` throw ERR_MODULE_NOT_FOUND,
+    // so executeTool's catch (Task 19) MUST emit the canonical native-load
+    // payload. Asserts the full lazy-loading contract end-to-end.
+    send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: {
+        name: "execute",
+        arguments: { code: "async function run(){ return 1; }" },
+      },
+    });
+    const execResponse = await waitForId(3, 5_000) as {
+      result?: { content?: { type: string; text: string }[]; isError?: boolean };
+    };
+    expect(execResponse.result?.isError).toBe(true);
+    const innerText = execResponse.result?.content?.[0]?.text ?? "";
+    const inner = JSON.parse(innerText) as { ok: boolean; error?: string };
+    expect(inner.ok).toBe(false);
+    expect(inner.error).toMatch(/isolated-vm native module failed to load/);
+    expect(inner.error).toMatch(/pnpm rebuild isolated-vm/);
 
     child.kill();
   }, 30_000);
