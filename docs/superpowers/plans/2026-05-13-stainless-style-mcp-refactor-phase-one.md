@@ -511,11 +511,87 @@ private async postDirect<T>(
 Run: `pnpm exec tsc --noEmit && pnpm lint`
 Expected: no errors. (Service subclasses still call the methods with the old 2-arg shape; the new param is optional so they keep working.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Add a unit test that proves `signal` + `timeout` reach axios**
+
+Create `src/services/base.service.test.ts`:
+
+```ts
+// src/services/base.service.test.ts
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import axios from "axios";
+import { BaseService } from "./base.service.js";
+
+// Concrete subclass exposing the protected helpers for the test
+class TestService extends BaseService {
+  async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
+    return this.fetchWithToolConfig<unknown>(url, this.DEFAULT_CACHE_TTL_SECONDS, opts);
+  }
+  async fetchCustomTTL(url: string, ttl: number, opts?: { signal?: AbortSignal; timeout?: number }) {
+    return this.fetchWithToolConfig<unknown>(url, ttl, opts);
+  }
+  async postDefaults(url: string, body: unknown, opts?: { signal?: AbortSignal; timeout?: number }) {
+    return this.postWithToolConfig<unknown>(url, body, opts);
+  }
+}
+
+describe("BaseService RequestOptions forwarding", () => {
+  let svc: TestService;
+  let getSpy: ReturnType<typeof vi.spyOn>;
+  let postSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    svc = new TestService();
+    getSpy = vi.spyOn(axios, "get").mockResolvedValue({ data: { ok: true } } as never);
+    postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true } } as never);
+  });
+
+  it("fetchWithToolConfig forwards signal + timeout to axios.get when default TTL is used", async () => {
+    const controller = new AbortController();
+    await svc.fetchDefaultTTL("https://example.test/x", { signal: controller.signal, timeout: 6_000 });
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    const callOpts = getSpy.mock.calls[0]![1] as { signal?: AbortSignal; timeout?: number };
+    expect(callOpts.signal).toBe(controller.signal);
+    expect(callOpts.timeout).toBe(6_000);
+  });
+
+  it("fetchWithToolConfig with explicit TTL still forwards signal + timeout", async () => {
+    const controller = new AbortController();
+    await svc.fetchCustomTTL("https://example.test/x", 60, { signal: controller.signal, timeout: 6_000 });
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    const callOpts = getSpy.mock.calls[0]![1] as { signal?: AbortSignal; timeout?: number };
+    expect(callOpts.signal).toBe(controller.signal);
+    expect(callOpts.timeout).toBe(6_000);
+  });
+
+  it("postWithToolConfig forwards signal + timeout to axios.post", async () => {
+    const controller = new AbortController();
+    await svc.postDefaults("https://example.test/x", { a: 1 }, { signal: controller.signal, timeout: 6_000 });
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    const callOpts = postSpy.mock.calls[0]![2] as { signal?: AbortSignal; timeout?: number };
+    expect(callOpts.signal).toBe(controller.signal);
+    expect(callOpts.timeout).toBe(6_000);
+  });
+
+  it("no options ⇒ no signal/timeout on the axios call (legacy parity)", async () => {
+    await svc.fetchDefaultTTL("https://example.test/x");
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    const callOpts = getSpy.mock.calls[0]![1] as Record<string, unknown>;
+    expect(callOpts.signal).toBeUndefined();
+    expect(callOpts.timeout).toBeUndefined();
+  });
+});
+```
+
+The first test is the critical one — it proves a `*Raw()` method that uses `DEFAULT_CACHE_TTL_SECONDS` still gets `signal`/`timeout` through. If an implementer accidentally drops the TTL argument and writes `this.fetchWithToolConfig(url, opts)` (2-arg), this test fails because `opts` becomes `cacheDuration` and never reaches axios.
+
+Run: `pnpm exec vitest run src/services/base.service.test.ts`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/base.service.ts
-git commit -m "feat(base.service): thread RequestOptions through fetch/post helpers"
+git add src/services/base.service.ts src/services/base.service.test.ts
+git commit -m "feat(base.service): thread RequestOptions through fetch/post helpers; unit-test forwarding"
 ```
 
 ---
@@ -898,6 +974,27 @@ async getX(args): Promise<string> {
 ```
 
 URLs, TTLs, and `formatResponse` options stay identical to the v0.1 versions — the snapshots are the oracle. Add `import { BaseService, type RequestOptions } from "./base.service.js";` to the imports.
+
+**TTL gotcha — explicit DEFAULT_CACHE_TTL_SECONDS for default-TTL methods.** `fetchWithToolConfig` is signed `(url, cacheDuration?, options?)`. Several v0.1 methods relied on the default by calling just `this.fetchWithToolConfig<T>(url)` (e.g. [user.service.ts:119](../../../src/services/user.service.ts#L119) `getUserUsedChainList`). If you naively port that to `this.fetchWithToolConfig<T>(url, options)`, **the options object gets interpreted as `cacheDuration`** (a number) and the AbortSignal/axios timeout never reaches axios. Every raw method must pass three positional args:
+
+```ts
+async getUserUsedChainListRaw(
+  args: { id: string },
+  options?: RequestOptions,
+): Promise<UserUsedChain[]> {
+  try {
+    return await this.fetchWithToolConfig<UserUsedChain[]>(
+      `${this.baseUrl}/user/used_chain_list?id=${args.id}`,
+      this.DEFAULT_CACHE_TTL_SECONDS,   // explicit — even when v0.1 omitted it
+      options,
+    );
+  } catch (error) {
+    throw logAndWrapError(`Failed to fetch used chain list for user ${args.id}`, error);
+  }
+}
+```
+
+`DEFAULT_CACHE_TTL_SECONDS` is `protected readonly` on `BaseService` ([base.service.ts:48](../../../src/services/base.service.ts#L48)) and equals `config.debankDefaultLifeTime` — same value as the parameter default in the signature, so byte-identical for the legacy markdown path.
 
 - [ ] **Step 1: Apply the template to all four methods**
 
@@ -2705,15 +2802,26 @@ describe("debank_get_supported_chain_list (default surface)", () => {
     expect(res.content[0]!.text).toBe("# Supported Chains\n\n* eth\n* bsc");
   });
 
-  it("works without _userQuery (no setQuery calls)", async () => {
+  it("works without _userQuery (no setQuery calls on ANY service)", async () => {
     const servicesMod = await import("../services/index.js");
     const setQueryChain = vi.spyOn(servicesMod.chainService, "setQuery").mockClear();
+    const setQueryProtocol = vi.spyOn(servicesMod.protocolService, "setQuery").mockClear();
+    const setQueryToken = vi.spyOn(servicesMod.tokenService, "setQuery").mockClear();
+    const setQueryTransaction = vi.spyOn(servicesMod.transactionService, "setQuery").mockClear();
+    const setQueryUser = vi.spyOn(servicesMod.userService, "setQuery").mockClear();
     vi.spyOn(servicesMod.chainService, "getSupportedChainList").mockResolvedValue("# Chains");
 
     const { supportedChainListTool } = await import("./tools.js");
     const res = await supportedChainListTool.execute({});
 
+    // Assert ALL five services were untouched — a regression that pipes
+    // setQuery to a single service when _userQuery is absent would have
+    // passed the previous one-service check.
     expect(setQueryChain).not.toHaveBeenCalled();
+    expect(setQueryProtocol).not.toHaveBeenCalled();
+    expect(setQueryToken).not.toHaveBeenCalled();
+    expect(setQueryTransaction).not.toHaveBeenCalled();
+    expect(setQueryUser).not.toHaveBeenCalled();
     expect(res.content[0]!.text).toBe("# Chains");
   });
 
@@ -3281,9 +3389,22 @@ describe("lazy isolated-vm", () => {
     const waitForId = (id: number, timeoutMs: number) =>
       new Promise<unknown>((resolve, reject) => {
         if (responses[id] !== undefined) return resolve(responses[id]);
-        responseWaiters[id] = resolve;
-        setTimeout(() => reject(new Error(`Timed out waiting for response id=${id}. stderr: ${stderrBuf.join("")}`)), timeoutMs);
+        // Clear the timeout the moment we resolve so it doesn't fire later
+        // (which would leak a stale timer + reject after the test has passed).
+        const timer = setTimeout(
+          () => reject(new Error(`Timed out waiting for response id=${id}. stderr: ${stderrBuf.join("")}`)),
+          timeoutMs,
+        );
+        responseWaiters[id] = (val) => {
+          clearTimeout(timer);
+          resolve(val);
+        };
       });
+
+    // Wrap every assertion in try/finally so an early failure or timeout
+    // still kills the child process — otherwise vitest hangs waiting for
+    // open handles to drain.
+    try {
 
     // 1. initialize
     send({
@@ -3361,8 +3482,12 @@ describe("lazy isolated-vm", () => {
     expect(inner.ok).toBe(false);
     expect(inner.error).toMatch(/isolated-vm native module failed to load/);
     expect(inner.error).toMatch(/pnpm rebuild isolated-vm/);
-
-    child.kill();
+    } finally {
+      // Always reap the child — a failed assertion or timeout above would
+      // otherwise leave a stdio MCP server running, hanging the test runner
+      // on open handles.
+      if (!child.killed) child.kill();
+    }
   }, 30_000);
 });
 ```
