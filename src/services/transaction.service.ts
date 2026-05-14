@@ -6,7 +6,7 @@
 import { config } from "../config.js";
 import { createChildLogger } from "../lib/utils/index.js";
 import type { PreExecResult, TransactionExplanation } from "../types.js";
-import { BaseService } from "./base.service.js";
+import { BaseService, type RequestOptions } from "./base.service.js";
 
 const logger = createChildLogger("DeBank Transaction Service");
 
@@ -22,10 +22,10 @@ const logAndWrapError = (context: string, error: unknown): Error => {
 };
 
 export class TransactionService extends BaseService {
-	async preExecTransaction(args: {
-		tx: string;
-		pending_tx_list?: string;
-	}): Promise<string> {
+	async preExecTransactionRaw(
+		args: { tx: string; pending_tx_list?: string },
+		options?: RequestOptions,
+	): Promise<PreExecResult> {
 		try {
 			let txPayload: unknown;
 			try {
@@ -60,19 +60,37 @@ export class TransactionService extends BaseService {
 					: {}),
 			};
 
-			const data = await this.postWithToolConfig<PreExecResult>(
+			return await this.postWithToolConfig<PreExecResult>(
 				`${config.baseUrl}/wallet/pre_exec_tx`,
 				body,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "Transaction Simulation Result",
-			});
 		} catch (error) {
 			throw logAndWrapError("Failed to simulate transaction", error);
 		}
 	}
 
-	async explainTransaction(args: { tx: string }): Promise<string> {
+	async preExecTransaction(args: {
+		tx: string;
+		pending_tx_list?: string;
+	}): Promise<string> {
+		const data = await this.preExecTransactionRaw(args);
+		try {
+			return await this.formatResponse(data, {
+				title: "Transaction Simulation Result",
+			});
+		} catch (error) {
+			throw logAndWrapError(
+				"Failed to format transaction simulation result response",
+				error,
+			);
+		}
+	}
+
+	async explainTransactionRaw(
+		args: { tx: string },
+		options?: RequestOptions,
+	): Promise<TransactionExplanation> {
 		try {
 			let txPayload: unknown;
 			try {
@@ -90,15 +108,27 @@ export class TransactionService extends BaseService {
 				tx: txPayload,
 			};
 
-			const data = await this.postWithToolConfig<TransactionExplanation>(
+			return await this.postWithToolConfig<TransactionExplanation>(
 				`${config.baseUrl}/wallet/explain_tx`,
 				body,
+				options,
 			);
+		} catch (error) {
+			throw logAndWrapError("Failed to explain transaction", error);
+		}
+	}
+
+	async explainTransaction(args: { tx: string }): Promise<string> {
+		const data = await this.explainTransactionRaw(args);
+		try {
 			return await this.formatResponse(data, {
 				title: "Transaction Explanation",
 			});
 		} catch (error) {
-			throw logAndWrapError("Failed to explain transaction", error);
+			throw logAndWrapError(
+				"Failed to format transaction explanation response",
+				error,
+			);
 		}
 	}
 }
