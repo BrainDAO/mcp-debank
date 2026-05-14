@@ -518,18 +518,27 @@ Create `src/services/base.service.test.ts`:
 ```ts
 // src/services/base.service.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import axios from "axios";
+
+// IMPORTANT: do NOT statically import axios at the top of this file. With
+// `vi.resetModules()` in beforeEach, BaseService gets a fresh axios module
+// instance when re-imported. A stale top-level `import axios from "axios"`
+// would refer to a DIFFERENT module record than the one BaseService sees —
+// the spy would attach to the stale instance and never see the calls. Both
+// describe blocks below import axios dynamically AFTER resetModules so the
+// spy and BaseService share the same instance.
 
 // Direct-path tests use the env already pruned by tests/integration/setup.ts —
 // IQ_GATEWAY_URL/KEY are deleted there, so fetchWithToolConfig routes to
 // fetchDirect.
 describe("BaseService RequestOptions forwarding — direct path", () => {
-  let svc: import("./base.service.js").BaseService & { fetchDefaultTTL: (...a: unknown[]) => Promise<unknown>; fetchCustomTTL: (...a: unknown[]) => Promise<unknown>; postDefaults: (...a: unknown[]) => Promise<unknown> };
+  let svc: { fetchDefaultTTL: (...a: unknown[]) => Promise<unknown>; fetchCustomTTL: (...a: unknown[]) => Promise<unknown>; postDefaults: (...a: unknown[]) => Promise<unknown> };
   let getSpy: ReturnType<typeof vi.spyOn>;
   let postSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     vi.resetModules();
+    const axiosMod = await import("axios");
+    const axios = (axiosMod as { default?: typeof import("axios").default }).default ?? axiosMod;
     const { BaseService } = await import("./base.service.js");
     class TestService extends BaseService {
       async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
@@ -543,6 +552,7 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
       }
     }
     svc = new TestService() as never;
+    // Same axios module instance BaseService imported on the line above.
     getSpy = vi.spyOn(axios, "get").mockResolvedValue({ data: { ok: true } } as never);
     postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true } } as never);
   });
@@ -603,6 +613,10 @@ describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
     process.env.IQ_GATEWAY_URL = "https://gateway.test/proxy";
     process.env.IQ_GATEWAY_KEY = "gw-test-key";
     vi.resetModules();
+    // Dynamic-import axios AFTER resetModules so we get the same module
+    // instance BaseService sees. See top-of-file comment.
+    const axiosMod = await import("axios");
+    const axios = (axiosMod as { default?: typeof import("axios").default }).default ?? axiosMod;
     const { BaseService } = await import("./base.service.js");
     class TestService extends BaseService {
       async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
