@@ -18,6 +18,12 @@ By implementing the Model Context Protocol (MCP), this server allows Large Langu
 *   **NFT Discovery**: Retrieve NFT holdings and spending permissions across multiple chains.
 *   **Smart Resolution**: AI-powered entity resolution for chains, tokens, and wrapped token keywords.
 
+## Requirements
+
+- Node.js >= 22 (required by `isolated-vm` 6.x; older Node versions cannot run the `execute` sandbox).
+- The published binary's shebang already passes `--no-node-snapshot` to node. If you invoke `node dist/index.js` directly (rare), pass `--no-node-snapshot` yourself: `node --no-node-snapshot dist/index.js`.
+- On Alpine, ARM, or other platforms without a prebuilt `isolated-vm` addon: `pnpm rebuild isolated-vm` after install.
+
 ## 📦 Installation
 
 ### 🚀 Using pnpm dlx (Recommended)
@@ -118,7 +124,80 @@ Add the following configuration to your MCP client settings (e.g., `claude_deskt
 *   "Simulate this transaction before I submit it."
 *   "Explain what this transaction does."
 
+## Code Mode (v0.2+)
+
+Starting in v0.2, the preferred way to query DeBank from an AI agent is the `execute` + `search_docs` pair. These two tools replace the 30 legacy endpoint-specific tools for new integrations.
+
+### `execute` — Sandboxed JavaScript
+
+Run arbitrary JavaScript inside a secure `isolated-vm` sandbox. The sandbox receives a fully-configured DeBank client instance as `debank`. All service namespaces (`debank.user`, `debank.token`, `debank.chain`, `debank.protocol`, `debank.pool`, `debank.nft`) are available.
+
+**Example:**
+
+```javascript
+async function run(debank) {
+  return await debank.user.getUserTotalBalance({ id: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045" });
+}
+```
+
+**Expected response:**
+
+```json
+{
+  "total_usd_value": 1234567.89,
+  "chain_list": [
+    { "id": "eth", "usd_value": 800000.0 },
+    { "id": "arb", "usd_value": 434567.89 }
+  ]
+}
+```
+
+### `search_docs` — Local Documentation Search
+
+Search the embedded MiniSearch index over all DeBank API methods and cookbook entries.
+
+**Example query:** `user total balance`
+
+**Trimmed results:**
+
+```json
+[
+  {
+    "id": "user.getUserTotalBalance",
+    "title": "getUserTotalBalance",
+    "description": "Retrieve a user's total net assets across all supported chains.",
+    "params": ["id: string — wallet address"],
+    "score": 8.4
+  }
+]
+```
+
+### Migrating from v0.1.x
+
+In v0.2, the 30 endpoint-specific `debank_*` tools are **hidden by default**. Only `debank_get_supported_chain_list` remains visible as a grounding tool.
+
+- **New integrations** should use `execute` and `search_docs` instead of the legacy tools.
+- **Existing integrations** that rely on the old tool surface can restore all 30 hidden tools by passing `--legacy-tools` at startup or setting the environment variable `DEBANK_MCP_LEGACY=1`.
+
+```json
+{
+  "mcpServers": {
+    "debank": {
+      "command": "pnpm",
+      "args": ["dlx", "@iqai/mcp-debank", "--legacy-tools"],
+      "env": {
+        "DEBANK_API_KEY": "your_debank_api_key_here"
+      }
+    }
+  }
+}
+```
+
 ## 🛠️ MCP Tools
+
+## Legacy tools (`--legacy-tools`)
+
+> The 30 tools below are hidden by default. To restore them, pass `--legacy-tools` or set `DEBANK_MCP_LEGACY=1`. New integrations should use `execute` + `search_docs` instead.
 
 <!-- AUTO-GENERATED TOOLS START -->
 
