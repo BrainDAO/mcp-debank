@@ -92,7 +92,7 @@ export abstract class BaseService {
 					"x-api-key": env.IQ_GATEWAY_KEY,
 				},
 				...(options?.signal ? { signal: options.signal } : {}),
-				...(options?.timeout ? { timeout: options.timeout } : {}),
+				...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
@@ -120,7 +120,7 @@ export abstract class BaseService {
 			const response = await axios.get<T>(url, {
 				headers,
 				...(options?.signal ? { signal: options.signal } : {}),
-				...(options?.timeout ? { timeout: options.timeout } : {}),
+				...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
@@ -156,7 +156,7 @@ export abstract class BaseService {
 					"x-api-key": env.IQ_GATEWAY_KEY!,
 				},
 				...(options?.signal ? { signal: options.signal } : {}),
-				...(options?.timeout ? { timeout: options.timeout } : {}),
+				...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
@@ -181,7 +181,7 @@ export abstract class BaseService {
 			const response = await axios.post<T>(url, body, {
 				headers,
 				...(options?.signal ? { signal: options.signal } : {}),
-				...(options?.timeout ? { timeout: options.timeout } : {}),
+				...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
