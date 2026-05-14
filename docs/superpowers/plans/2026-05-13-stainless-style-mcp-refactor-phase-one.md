@@ -517,32 +517,40 @@ Create `src/services/base.service.test.ts`:
 
 ```ts
 // src/services/base.service.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import axios from "axios";
-import { BaseService } from "./base.service.js";
 
-// Concrete subclass exposing the protected helpers for the test
-class TestService extends BaseService {
-  async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
-    return this.fetchWithToolConfig<unknown>(url, this.DEFAULT_CACHE_TTL_SECONDS, opts);
-  }
-  async fetchCustomTTL(url: string, ttl: number, opts?: { signal?: AbortSignal; timeout?: number }) {
-    return this.fetchWithToolConfig<unknown>(url, ttl, opts);
-  }
-  async postDefaults(url: string, body: unknown, opts?: { signal?: AbortSignal; timeout?: number }) {
-    return this.postWithToolConfig<unknown>(url, body, opts);
-  }
-}
-
-describe("BaseService RequestOptions forwarding", () => {
-  let svc: TestService;
+// Direct-path tests use the env already pruned by tests/integration/setup.ts —
+// IQ_GATEWAY_URL/KEY are deleted there, so fetchWithToolConfig routes to
+// fetchDirect.
+describe("BaseService RequestOptions forwarding — direct path", () => {
+  let svc: import("./base.service.js").BaseService & { fetchDefaultTTL: (...a: unknown[]) => Promise<unknown>; fetchCustomTTL: (...a: unknown[]) => Promise<unknown>; postDefaults: (...a: unknown[]) => Promise<unknown> };
   let getSpy: ReturnType<typeof vi.spyOn>;
   let postSpy: ReturnType<typeof vi.spyOn>;
 
-  beforeEach(() => {
-    svc = new TestService();
+  beforeEach(async () => {
+    vi.resetModules();
+    const { BaseService } = await import("./base.service.js");
+    class TestService extends BaseService {
+      async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
+        return this.fetchWithToolConfig<unknown>(url, this.DEFAULT_CACHE_TTL_SECONDS, opts);
+      }
+      async fetchCustomTTL(url: string, ttl: number, opts?: { signal?: AbortSignal; timeout?: number }) {
+        return this.fetchWithToolConfig<unknown>(url, ttl, opts);
+      }
+      async postDefaults(url: string, body: unknown, opts?: { signal?: AbortSignal; timeout?: number }) {
+        return this.postWithToolConfig<unknown>(url, body, opts);
+      }
+    }
+    svc = new TestService() as never;
     getSpy = vi.spyOn(axios, "get").mockResolvedValue({ data: { ok: true } } as never);
     postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true } } as never);
+  });
+
+  afterEach(() => {
+    // Restore axios spies so call history / mock state cannot leak between
+    // tests (the toHaveBeenCalledTimes(1) assertions are brittle otherwise).
+    vi.restoreAllMocks();
   });
 
   it("fetchWithToolConfig forwards signal + timeout to axios.get when default TTL is used", async () => {
@@ -580,12 +588,68 @@ describe("BaseService RequestOptions forwarding", () => {
     expect(callOpts.timeout).toBeUndefined();
   });
 });
+
+// Gateway-path tests: set IQ_GATEWAY_URL + IQ_GATEWAY_KEY before re-importing
+// BaseService so env.ts re-parses and base.service.ts routes through
+// fetchViaGateway / postViaGateway. The signal+timeout contract applies on
+// both paths — a missed spread in the gateway functions would otherwise pass
+// the direct-path tests above.
+describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
+  let svc: { fetchDefaultTTL: (...a: unknown[]) => Promise<unknown>; postDefaults: (...a: unknown[]) => Promise<unknown> };
+  let getSpy: ReturnType<typeof vi.spyOn>;
+  let postSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    process.env.IQ_GATEWAY_URL = "https://gateway.test/proxy";
+    process.env.IQ_GATEWAY_KEY = "gw-test-key";
+    vi.resetModules();
+    const { BaseService } = await import("./base.service.js");
+    class TestService extends BaseService {
+      async fetchDefaultTTL(url: string, opts?: { signal?: AbortSignal; timeout?: number }) {
+        return this.fetchWithToolConfig<unknown>(url, this.DEFAULT_CACHE_TTL_SECONDS, opts);
+      }
+      async postDefaults(url: string, body: unknown, opts?: { signal?: AbortSignal; timeout?: number }) {
+        return this.postWithToolConfig<unknown>(url, body, opts);
+      }
+    }
+    svc = new TestService() as never;
+    getSpy = vi.spyOn(axios, "get").mockResolvedValue({ data: { ok: true } } as never);
+    postSpy = vi.spyOn(axios, "post").mockResolvedValue({ data: { ok: true } } as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.IQ_GATEWAY_URL;
+    delete process.env.IQ_GATEWAY_KEY;
+  });
+
+  it("fetchViaGateway forwards signal + timeout to axios.get", async () => {
+    const controller = new AbortController();
+    await svc.fetchDefaultTTL("https://pro-openapi.debank.com/v1/x", { signal: controller.signal, timeout: 6_000 });
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    // axios.get receives the proxy URL (constructed by fetchViaGateway), not the
+    // original DeBank URL. We don't assert the URL shape here — that's gateway-
+    // routing behavior and unchanged from v0.1. We assert the OPTIONS object.
+    const callOpts = getSpy.mock.calls[0]![1] as { signal?: AbortSignal; timeout?: number };
+    expect(callOpts.signal).toBe(controller.signal);
+    expect(callOpts.timeout).toBe(6_000);
+  });
+
+  it("postViaGateway forwards signal + timeout to axios.post", async () => {
+    const controller = new AbortController();
+    await svc.postDefaults("https://pro-openapi.debank.com/v1/x", { a: 1 }, { signal: controller.signal, timeout: 6_000 });
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    const callOpts = postSpy.mock.calls[0]![2] as { signal?: AbortSignal; timeout?: number };
+    expect(callOpts.signal).toBe(controller.signal);
+    expect(callOpts.timeout).toBe(6_000);
+  });
+});
 ```
 
-The first test is the critical one — it proves a `*Raw()` method that uses `DEFAULT_CACHE_TTL_SECONDS` still gets `signal`/`timeout` through. If an implementer accidentally drops the TTL argument and writes `this.fetchWithToolConfig(url, opts)` (2-arg), this test fails because `opts` becomes `cacheDuration` and never reaches axios.
+The first test in the direct-path block is the critical TTL-gotcha guard — it proves a `*Raw()` method that uses `DEFAULT_CACHE_TTL_SECONDS` still gets `signal`/`timeout` through. If an implementer accidentally writes `this.fetchWithToolConfig(url, opts)` (2-arg), this test fails because `opts` becomes `cacheDuration` and never reaches axios. The gateway-path block proves the same contract for the IQ Gateway routing.
 
 Run: `pnpm exec vitest run src/services/base.service.test.ts`
-Expected: PASS, 4 tests.
+Expected: PASS, 6 tests (4 direct + 2 gateway).
 
 - [ ] **Step 7: Commit**
 
@@ -3740,14 +3804,23 @@ git commit -m "test(mcp/legacy): child-process side-effect-freeness check for to
 Run: `pnpm run build`
 Expected: clean build, no errors. `dist/` is fresh.
 
-- [ ] **Step 2: Run the full test suite**
+- [ ] **Step 2: Run the linter**
+
+Run: `pnpm lint`
+Expected: no Biome errors. This repo's Biome config requires tabs and specific formatting; new/generated TS files (`embedded-index.ts`, `instructions.generated.ts`, every new module under `src/mcp/`, every new test file under `tests/integration/`) must satisfy it. CI also runs `pnpm lint` (.github/workflows/test.yml), so anything that slips here will fail the PR check.
+
+If lint fails on a generated file, fix the generator's emit format (not the generated file by hand — that gets overwritten on the next `prebuild`).
+
+If lint fails on hand-written files, run `pnpm run format` to auto-fix the safe ones and inspect any remaining diagnostics.
+
+- [ ] **Step 3: Run the full test suite**
 
 Run: `pnpm test`
 Expected: every test passes. Lots of them now — ~30+ unit tests across modules, ~30 service-snapshot regressions, ~10 integration tests.
 
 If anything fails, fix and commit before declaring done.
 
-- [ ] **Step 3: Sanity-check the server boots and responds to `initialize`**
+- [ ] **Step 4: Sanity-check the server boots and responds to `initialize`**
 
 FastMCP stdio servers do NOT proactively announce ready — they wait for the client to send `initialize`. Drive the handshake manually:
 
@@ -3761,7 +3834,7 @@ EOF
 
 Expected: two JSON-RPC responses on stdout. The second includes `execute`, `search_docs`, `debank_resolve`, `debank_get_supported_chain_list`. The process exits cleanly when stdin closes after the heredoc.
 
-- [ ] **Step 4: Sanity-check legacy mode**
+- [ ] **Step 5: Sanity-check legacy mode**
 
 ```bash
 DEBANK_API_KEY=sanity node dist/index.js --legacy-tools <<EOF
@@ -3773,7 +3846,7 @@ EOF
 
 Expected: a "Legacy tools enabled" log line on stderr; the `tools/list` response now also includes the 30 hidden legacy tools (e.g. `debank_get_user_chain_balance`).
 
-- [ ] **Step 5: Final commit (only if anything changed during sanity checks)**
+- [ ] **Step 6: Final commit (only if anything changed during sanity checks)**
 
 ```bash
 git status
