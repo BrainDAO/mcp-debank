@@ -160,7 +160,7 @@ describe("execute/client.ts proxy forwarding", () => {
 		await installDebankClient(ctx);
 
 		const script = await isolate.compileScript(
-			`(async () => { return debank.resolveWrappedToken("WETH", "eth"); })()`,
+			`(() => { return debank.resolveWrappedToken("WETH", "eth"); })()`,
 		);
 		const wethAddr = await script.run(ctx, {
 			timeout: 5_000,
@@ -171,7 +171,7 @@ describe("execute/client.ts proxy forwarding", () => {
 		expect(wethAddr).toMatch(/^0x[a-f0-9]{40}$/i);
 
 		const script2 = await isolate.compileScript(
-			`(async () => { return debank.resolveWrappedToken("WETH", "definitely_not_a_chain"); })()`,
+			`(() => { return debank.resolveWrappedToken("WETH", "definitely_not_a_chain"); })()`,
 		);
 		expect(
 			await script2.run(ctx, { timeout: 5_000, promise: true, copy: true }),

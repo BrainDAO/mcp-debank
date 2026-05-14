@@ -167,6 +167,21 @@ const RESOLVER_WRAPPER = `
 })($0, $1)
 `.trim();
 
+// Sync variant for resolveWrappedToken — uses applySync so the guest sees a
+// plain function that returns the value directly (not a Promise). The host
+// function must be synchronous; resolveWrappedToken is a pure in-memory
+// lookup (no I/O), so applySync is safe.
+const SYNC_RESOLVER_WRAPPER = `
+(function(ref, prop) {
+	globalThis.debank[prop] = function() {
+		var a = Array.prototype.slice.call(arguments);
+		var env = ref.applySync(undefined, a);
+		if (env.ok) return env.data;
+		throw new Error(env.error);
+	};
+})($0, $1)
+`.trim();
+
 export async function installDebankClient(
 	ctx: import("isolated-vm").Context,
 ): Promise<void> {
@@ -201,10 +216,20 @@ export async function installDebankClient(
 		"resolveChains",
 	]);
 
-	await ctx.evalClosure(RESOLVER_WRAPPER, [
-		makeResolverRef(ivm, (kw: unknown, chainId: unknown) =>
-			resolveWrappedToken(kw as string, chainId as string),
-		),
+	await ctx.evalClosure(SYNC_RESOLVER_WRAPPER, [
+		new ivm.Reference((kw: unknown, chainId: unknown) => {
+			try {
+				const result = resolveWrappedToken(kw as string, chainId as string);
+				return new ivm.ExternalCopy({ ok: true, data: result }).copyInto({
+					release: true,
+				});
+			} catch (err) {
+				return new ivm.ExternalCopy({
+					ok: false,
+					error: (err as Error).message || String(err),
+				}).copyInto({ release: true });
+			}
+		}),
 		"resolveWrappedToken",
 	]);
 }
