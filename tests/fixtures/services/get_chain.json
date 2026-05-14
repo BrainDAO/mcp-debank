@@ -1,0 +1,9 @@
+{
+	"id": "eth",
+	"community_id": 1,
+	"name": "Ethereum",
+	"logo_url": "https://static.debank.com/image/chain/logo_url/eth/26a4b944bea4da7e1b8e6dc5abc39dcc.png",
+	"native_token_id": "eth",
+	"wrapped_token_id": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+	"is_support_pre_exec": true
+}

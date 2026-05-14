@@ -1,0 +1,17 @@
+{
+	"balance_change": {
+		"success": true,
+		"send_token_list": [],
+		"receive_token_list": [],
+		"send_nft_list": [],
+		"receive_nft_list": [],
+		"usd_value_change": -2.5
+	},
+	"gas": {
+		"success": true,
+		"gas_used": 21000,
+		"gas_limit": 21000,
+		"gas_price": 15000000000
+	},
+	"pre_exec_version": "v2"
+}

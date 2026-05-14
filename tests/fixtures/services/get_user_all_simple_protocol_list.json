@@ -1,0 +1,11 @@
+[
+	{
+		"id": "compound",
+		"chain": "eth",
+		"name": "Compound V2",
+		"logo_url": "https://static.debank.com/image/project/logo_url/compound/c8a44af01d19f1ec6d93a0bc7aca3ee5.png",
+		"site_url": "https://compound.finance",
+		"has_supported_portfolio": true,
+		"portfolio_item_list": []
+	}
+]

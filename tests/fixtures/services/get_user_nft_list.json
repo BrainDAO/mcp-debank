@@ -1,0 +1,15 @@
+[
+	{
+		"id": "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:1",
+		"contract_id": "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d",
+		"inner_id": "1",
+		"chain": "eth",
+		"name": "Bored Ape Yacht Club #1",
+		"description": "A bored ape.",
+		"content_type": "image_url",
+		"content": "https://ipfs.io/ipfs/QmeSjSinHpPnmXmspMjwiXyN6zS4E9zccariGR3jxcaWtq/1",
+		"thumbnail_url": "https://ipfs.io/ipfs/QmeSjSinHpPnmXmspMjwiXyN6zS4E9zccariGR3jxcaWtq/1",
+		"total_supply": 10000,
+		"attributes": [{ "trait_type": "Background", "value": "Blue" }]
+	}
+]

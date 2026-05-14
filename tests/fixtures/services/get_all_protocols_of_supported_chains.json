@@ -1,0 +1,20 @@
+[
+	{
+		"id": "uniswap",
+		"chain": "eth",
+		"name": "Uniswap V3",
+		"logo_url": "https://static.debank.com/image/project/logo_url/uniswap/b5a9dac51fdfc87b88e02c97e1b6b58b.png",
+		"site_url": "https://app.uniswap.org",
+		"has_supported_portfolio": true,
+		"tvl": 3500000000
+	},
+	{
+		"id": "aave2",
+		"chain": "eth",
+		"name": "Aave V2",
+		"logo_url": "https://static.debank.com/image/project/logo_url/aave2/d49cfc94f5a97b52fc8c0ccfd1d3db55.png",
+		"site_url": "https://app.aave.com",
+		"has_supported_portfolio": true,
+		"tvl": 5200000000
+	}
+]
