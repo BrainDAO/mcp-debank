@@ -11,10 +11,16 @@
 		"dist"
 	],
 	"scripts": {
+		"build:docs": "tsx scripts/build-docs-index.ts",
+		"build:instructions": "tsx scripts/build-instructions.ts",
+		"prebuild": "pnpm run build:docs && pnpm run build:instructions",
 		"build": "tsc && shx chmod +x dist/index.js",
+		"pretest": "pnpm run build",
+		"test": "cross-env NODE_OPTIONS=--no-node-snapshot vitest run",
+		"test:watch": "cross-env NODE_OPTIONS=--no-node-snapshot vitest",
 		"prepare": "husky",
 		"watch": "tsc --watch",
-		"start": "node dist/index.js",
+		"start": "node --no-node-snapshot dist/index.js",
 		"format": "biome format . --write",
 		"lint": "biome check .",
 		"publish-packages": "pnpm run build && changeset publish"
@@ -57,6 +63,9 @@
 		"typescript": "^5.9.3",
 		"vitest": "^4.1.6",
 		"zod-to-json-schema": "^3.25.1"
+	},
+	"engines": {
+		"node": ">=22"
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [
