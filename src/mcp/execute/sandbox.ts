@@ -7,13 +7,16 @@
 // MUST NOT be imported statically from anywhere reachable from server
 // startup. Loaded dynamically by execute/tool.ts on first execute call.
 
+import dedent from "dedent";
+import type * as IVM from "isolated-vm";
+
 // Lazy-load isolated-vm. CJS import normalization required — see spec §3.1.
-let _ivm: typeof import("isolated-vm") | undefined;
+let _ivm: typeof IVM | undefined;
 async function getIvm() {
 	if (_ivm) return _ivm;
 	const mod = await import("isolated-vm");
-	_ivm = ((mod as { default?: typeof import("isolated-vm") }).default ??
-		mod) as typeof import("isolated-vm");
+	_ivm = ((mod as unknown as { default?: typeof IVM }).default ??
+		mod) as typeof IVM;
 	return _ivm;
 }
 
@@ -43,7 +46,7 @@ export type SandboxResult = {
  */
 export async function runInSandbox(
 	code: string,
-	installClient: (ctx: import("isolated-vm").Context) => Promise<void>,
+	installClient: (ctx: IVM.Context) => Promise<void>,
 ): Promise<SandboxResult> {
 	// Step 1: blocklist
 	for (const banned of BLOCKLIST) {
@@ -67,8 +70,8 @@ export async function runInSandbox(
 	 * Callers — including executeTool but also future unit tests — must be
 	 * able to rely on "runInSandbox never rejects."
 	 */
-	let ivm: typeof import("isolated-vm") | undefined;
-	let isolate: import("isolated-vm").Isolate | undefined;
+	let ivm: typeof IVM | undefined;
+	let isolate: IVM.Isolate | undefined;
 	let disposed = false;
 	const dispose = () => {
 		if (!isolate || disposed) return;
@@ -105,16 +108,18 @@ export async function runInSandbox(
 		 * silently lost log lines.
 		 */
 		await context.evalClosure(
-			`const __fmt = (a) => a.map((x) => {
-			   if (typeof x === 'string') return x;
-			   try { return JSON.stringify(x); } catch { return String(x); }
-			 }).join(' ');
-			 globalThis.console = {
-			   log:   (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
-			   warn:  (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
-			   error: (...a) => $1.applyIgnored(undefined, [__fmt(a)]),
-			 };
-			 globalThis.sleep = (ms) => $2.apply(undefined, [ms], { result: { promise: true } });`,
+			dedent`
+				const __fmt = (a) => a.map((x) => {
+					if (typeof x === 'string') return x;
+					try { return JSON.stringify(x); } catch { return String(x); }
+				}).join(' ');
+				globalThis.console = {
+					log:   (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
+					warn:  (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
+					error: (...a) => $1.applyIgnored(undefined, [__fmt(a)]),
+				};
+				globalThis.sleep = (ms) => $2.apply(undefined, [ms], { result: { promise: true } });
+			`,
 			[
 				new ivm.Reference((line: string) => logLines.push(line)),
 				new ivm.Reference((line: string) => errLines.push(line)),

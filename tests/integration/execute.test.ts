@@ -11,6 +11,7 @@ import {
 	it,
 	vi,
 } from "vitest";
+import type * as EntityResolver from "../../src/lib/entity-resolver.js";
 import { executeTool } from "../../src/mcp/execute/tool.js";
 
 const server = setupServer(
@@ -96,10 +97,7 @@ describe("execute integration", () => {
 	it("execute with debank.resolveChain inside (mocked resolver)", async () => {
 		vi.resetModules();
 		vi.doMock("../../src/lib/entity-resolver.js", async (importOriginal) => {
-			const actual =
-				await importOriginal<
-					typeof import("../../src/lib/entity-resolver.js")
-				>();
+			const actual = await importOriginal<typeof EntityResolver>();
 			return {
 				...actual,
 				resolveChain: vi.fn(async (n: string) =>

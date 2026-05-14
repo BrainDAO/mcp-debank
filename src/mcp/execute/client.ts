@@ -6,6 +6,8 @@
 // singleton's *Raw() method with an end-to-end AbortController + axios
 // timeout. Results cross the isolate boundary as ExternalCopy envelopes.
 
+import dedent from "dedent";
+import type * as IVM from "isolated-vm";
 import {
 	resolveChain,
 	resolveChains,
@@ -61,13 +63,13 @@ function resolveRaw(
  *      so errors route back to the guest as catchable exceptions.
  */
 function makeHostRef(
-	ivm: typeof import("isolated-vm"),
+	ivm: typeof IVM,
 	rawFn: (
 		args: unknown,
 		options: { signal: AbortSignal; timeout: number },
 	) => Promise<unknown>,
 	agentFacingName: string,
-): import("isolated-vm").Reference {
+): IVM.Reference {
 	return new ivm.Reference(async (argsJson: string) => {
 		const controller = new AbortController();
 		let timer: NodeJS.Timeout | undefined;
@@ -118,9 +120,9 @@ function makeHostRef(
  * For sync resolvers (resolveWrappedToken) pass async:false.
  */
 function makeResolverRef(
-	ivm: typeof import("isolated-vm"),
+	ivm: typeof IVM,
 	fn: (...args: unknown[]) => unknown,
-): import("isolated-vm").Reference {
+): IVM.Reference {
 	return new ivm.Reference(async (...args: unknown[]) => {
 		try {
 			const result = await fn(...args);
@@ -148,26 +150,26 @@ function parseQualified(qualified: string): [string, string] {
  * Guest-side wrapper template: receives a Reference $0 and installs an async
  * function that JSON-serialises args, calls the host, and unpacks the envelope.
  */
-const ASYNC_WRAPPER = `
-(function(ref, group, method) {
-	globalThis.debank[group][method] = async function(args) {
-		var env = await ref.apply(undefined, [JSON.stringify(args ?? {})], { result: { promise: true } });
-		if (env.ok) return env.data;
-		throw new Error(env.error);
-	};
-})($0, $1, $2)
-`.trim();
+const ASYNC_WRAPPER = dedent`
+	(function(ref, group, method) {
+		globalThis.debank[group][method] = async function(args) {
+			var env = await ref.apply(undefined, [JSON.stringify(args ?? {})], { result: { promise: true } });
+			if (env.ok) return env.data;
+			throw new Error(env.error);
+		};
+	})($0, $1, $2)
+`;
 
-const RESOLVER_WRAPPER = `
-(function(ref, prop) {
-	globalThis.debank[prop] = async function() {
-		var a = Array.prototype.slice.call(arguments);
-		var env = await ref.apply(undefined, a, { result: { promise: true } });
-		if (env.ok) return env.data;
-		throw new Error(env.error);
-	};
-})($0, $1)
-`.trim();
+const RESOLVER_WRAPPER = dedent`
+	(function(ref, prop) {
+		globalThis.debank[prop] = async function() {
+			var a = Array.prototype.slice.call(arguments);
+			var env = await ref.apply(undefined, a, { result: { promise: true } });
+			if (env.ok) return env.data;
+			throw new Error(env.error);
+		};
+	})($0, $1)
+`;
 
 /**
  * Sync variant for resolveWrappedToken — uses applySync so the guest sees a
@@ -175,23 +177,21 @@ const RESOLVER_WRAPPER = `
  * function must be synchronous; resolveWrappedToken is a pure in-memory
  * lookup (no I/O), so applySync is safe.
  */
-const SYNC_RESOLVER_WRAPPER = `
-(function(ref, prop) {
-	globalThis.debank[prop] = function() {
-		var a = Array.prototype.slice.call(arguments);
-		var env = ref.applySync(undefined, a);
-		if (env.ok) return env.data;
-		throw new Error(env.error);
-	};
-})($0, $1)
-`.trim();
+const SYNC_RESOLVER_WRAPPER = dedent`
+	(function(ref, prop) {
+		globalThis.debank[prop] = function() {
+			var a = Array.prototype.slice.call(arguments);
+			var env = ref.applySync(undefined, a);
+			if (env.ok) return env.data;
+			throw new Error(env.error);
+		};
+	})($0, $1)
+`;
 
-export async function installDebankClient(
-	ctx: import("isolated-vm").Context,
-): Promise<void> {
+export async function installDebankClient(ctx: IVM.Context): Promise<void> {
 	const mod = await import("isolated-vm");
-	const ivm = ((mod as { default?: typeof import("isolated-vm") }).default ??
-		mod) as typeof import("isolated-vm");
+	const ivm = ((mod as unknown as { default?: typeof IVM }).default ??
+		mod) as typeof IVM;
 
 	const groups = new Set(
 		TOOL_METADATA.map((m) => parseQualified(m.qualified)[0]),

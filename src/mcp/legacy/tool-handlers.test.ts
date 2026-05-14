@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import type * as EntityResolver from "../../lib/entity-resolver.js";
+import type * as Services from "../../services/index.js";
 import { legacyTools } from "./tool-handlers.js";
+import type * as ToolMetadata from "./tool-metadata.js";
 
 vi.mock("../../services/index.js", () => ({
 	chainService: {
@@ -13,7 +16,7 @@ vi.mock("../../services/index.js", () => ({
 }));
 
 vi.mock("../../lib/entity-resolver.js", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../../lib/entity-resolver.js")>()),
+	...(await importOriginal<typeof EntityResolver>()),
 	resolveEntities: vi.fn(async () => {}),
 	resolveChain: vi.fn(async () => null),
 	needsResolution: vi.fn(() => true),
@@ -84,13 +87,11 @@ describe("tool-handlers.legacyTools", () => {
 
 describe("TOOL_METADATA method-path resolution", () => {
 	it("every legacyMethodPath and sandboxMethodPath resolves to a callable on its singleton", async () => {
-		const realServices = await vi.importActual<
-			typeof import("../../services/index.js")
-		>("../../services/index.js");
+		const realServices = await vi.importActual<typeof Services>(
+			"../../services/index.js",
+		);
 		const { TOOL_METADATA } =
-			await vi.importActual<typeof import("./tool-metadata.js")>(
-				"./tool-metadata.js",
-			);
+			await vi.importActual<typeof ToolMetadata>("./tool-metadata.js");
 
 		const SERVICE_MAP: Record<string, Record<string, unknown>> = {
 			chainService: realServices.chainService as unknown as Record<

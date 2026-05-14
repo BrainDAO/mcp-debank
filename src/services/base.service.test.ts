@@ -1,4 +1,5 @@
 // src/services/base.service.test.ts
+import type Axios from "axios";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -9,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * the spy would attach to the stale instance and never see the calls. Both
  * describe blocks below import axios dynamically AFTER resetModules so the
  * spy and BaseService share the same instance.
+ *
+ * Note: `import type` (above) is type-only and erased at compile time, so it
+ * does NOT create a runtime axios reference. Safe to use here.
  */
 
 /**
@@ -29,8 +33,7 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 		vi.resetModules();
 		const axiosMod = await import("axios");
 		const axios =
-			(axiosMod as { default?: typeof import("axios").default }).default ??
-			axiosMod;
+			(axiosMod as unknown as { default?: typeof Axios }).default ?? axiosMod;
 		const { BaseService } = await import("./base.service.js");
 		class TestService extends BaseService {
 			async fetchDefaultTTL(
@@ -156,8 +159,7 @@ describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
 		 */
 		const axiosMod = await import("axios");
 		const axios =
-			(axiosMod as { default?: typeof import("axios").default }).default ??
-			axiosMod;
+			(axiosMod as unknown as { default?: typeof Axios }).default ?? axiosMod;
 		const { BaseService } = await import("./base.service.js");
 		class TestService extends BaseService {
 			async fetchDefaultTTL(

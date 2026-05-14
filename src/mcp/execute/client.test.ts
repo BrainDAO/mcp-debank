@@ -1,13 +1,15 @@
 // src/mcp/execute/client.test.ts
+
+import type * as IVM from "isolated-vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as EntityResolver from "../../lib/entity-resolver.js";
 
 /**
  * Partial mock so resolveWrappedToken keeps its real chains.ts lookup.
  * .js extension matches the runtime import string (NodeNext project).
  */
 vi.mock("../../lib/entity-resolver.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../../lib/entity-resolver.js")>();
+	const actual = await importOriginal<typeof EntityResolver>();
 	return {
 		...actual,
 		resolveChain: vi.fn(async (n: string) => (n === "BSC" ? "bsc" : null)),
@@ -18,7 +20,7 @@ vi.mock("../../lib/entity-resolver.js", async (importOriginal) => {
 });
 
 describe("execute/client.ts proxy forwarding", () => {
-	let isolate: import("isolated-vm").Isolate | undefined;
+	let isolate: IVM.Isolate | undefined;
 
 	beforeEach(async () => {
 		vi.resetModules();
@@ -46,8 +48,7 @@ describe("execute/client.ts proxy forwarding", () => {
 			.mockResolvedValue({ usd_value: 42 } as never);
 
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -80,8 +81,7 @@ describe("execute/client.ts proxy forwarding", () => {
 
 	it("guest cannot see the Raw suffix — debank.user.getUserChainBalanceRaw is undefined", async () => {
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -105,8 +105,7 @@ describe("execute/client.ts proxy forwarding", () => {
 
 	it("debank.resolveChain forwards to the mocked resolver", async () => {
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -127,8 +126,7 @@ describe("execute/client.ts proxy forwarding", () => {
 
 	it("debank.resolveChains forwards and returns the joined string", async () => {
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -149,8 +147,7 @@ describe("execute/client.ts proxy forwarding", () => {
 
 	it("debank.resolveWrappedToken uses the REAL chains.ts lookup (no mock)", async () => {
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -192,8 +189,7 @@ describe("execute/client.ts proxy forwarding", () => {
 			.mockResolvedValue([{ id: "eth", name: "Ethereum" }] as never);
 
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -235,8 +231,7 @@ describe("execute/client.ts proxy forwarding", () => {
 		).mockRejectedValue(new Error("upstream 503") as never);
 
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(
@@ -284,8 +279,7 @@ describe("execute/client.ts proxy forwarding", () => {
 		).mockRejectedValue(fakeWrappedError as never);
 
 		const mod = await import("isolated-vm");
-		const ivm =
-			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
 		isolate = new ivm.Isolate({ memoryLimit: 64 });
 		const ctx = await isolate.createContext();
 		await ctx.global.set(

@@ -32,7 +32,11 @@ delete process.env.OPENROUTER_API_KEY;
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { INVOCATIONS, type Services } from "../tests/fixtures/invocations.js";
+import {
+	type ExpectedRequest,
+	INVOCATIONS,
+	type Services,
+} from "../tests/fixtures/invocations.js";
 
 const repoRoot = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -96,7 +100,7 @@ async function stubFetchers() {
 /** Compare the recorded request against the expected metadata. Throws on mismatch. */
 function assertRequestMatches(
 	name: string,
-	expected: import("../tests/fixtures/invocations.js").ExpectedRequest,
+	expected: ExpectedRequest,
 	got: RequestLog | undefined,
 ): void {
 	if (!got) throw new Error(`${name}: no request was recorded`);

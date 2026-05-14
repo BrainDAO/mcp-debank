@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as EntityResolver from "../lib/entity-resolver.js";
 
 vi.mock("../lib/entity-resolver.js", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("../lib/entity-resolver.js")>();
+	const actual = await importOriginal<typeof EntityResolver>();
 	return {
 		...actual,
 		resolveChain: vi.fn(async (n: string) => {

@@ -5,6 +5,7 @@
 // the addon doesn't load at server startup.
 
 import { z } from "zod";
+import type { SandboxResult } from "./sandbox.js";
 
 const PARAMS = z.object({
 	code: z
@@ -25,7 +26,7 @@ export const executeTool = {
 	parameters: PARAMS,
 	annotations: { readOnlyHint: false },
 	execute: async (args: z.infer<typeof PARAMS>) => {
-		let sandboxResult: import("./sandbox.js").SandboxResult;
+		let sandboxResult: SandboxResult;
 		try {
 			const [{ runInSandbox }, { installDebankClient }] = await Promise.all([
 				import("./sandbox.js"),
