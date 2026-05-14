@@ -694,6 +694,13 @@ Create `tests/fixtures/invocations.ts`:
 // Single source of truth for the 31 service-method invocations exercised
 // by both the snapshot baseline script (one-shot capture) and the vitest
 // regression test in tests/integration/service-snapshots.test.ts.
+//
+// Each entry carries `expect` metadata describing the request the method
+// SHOULD produce (method, URL fragment, optional body). The fixture stub
+// in service-snapshots.test.ts asserts these before returning the fixture,
+// so a refactor that drops a query param (e.g. date_at), uses the wrong
+// endpoint, or mutates a POST body still gets caught — markdown parity
+// alone wouldn't have surfaced those.
 
 import type {
   chainService,
@@ -711,50 +718,186 @@ export type Services = {
   userService: typeof userService;
 };
 
+export type ExpectedRequest = {
+  method: "GET" | "POST";
+  /** Substring(s) that MUST appear in the URL passed to fetchWithToolConfig / postWithToolConfig. */
+  urlIncludes: string[];
+  /** For POST: the exact body object the method should pass. */
+  body?: unknown;
+};
+
 export type Invocation = {
   name: string;
   call: (s: Services) => Promise<string>;
+  expect: ExpectedRequest;
 };
 
 export const INVOCATIONS: Invocation[] = [
   // Chain (3)
-  { name: "get_supported_chain_list", call: (s) => s.chainService.getSupportedChainList() },
-  { name: "get_chain", call: (s) => s.chainService.getChain({ id: "eth" }) },
-  { name: "get_gas_prices", call: (s) => s.chainService.getGasPrices({ chain_id: "eth" }) },
+  {
+    name: "get_supported_chain_list",
+    call: (s) => s.chainService.getSupportedChainList(),
+    expect: { method: "GET", urlIncludes: ["/chain/list"] },
+  },
+  {
+    name: "get_chain",
+    call: (s) => s.chainService.getChain({ id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/chain", "id=eth"] },
+  },
+  {
+    name: "get_gas_prices",
+    call: (s) => s.chainService.getGasPrices({ chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/wallet/gas_market", "chain_id=eth"] },
+  },
   // Protocol (4)
-  { name: "get_all_protocols_of_supported_chains", call: (s) => s.protocolService.getAllProtocolsOfSupportedChains({}) },
-  { name: "get_protocol_information", call: (s) => s.protocolService.getProtocolInformation({ id: "uniswap" }) },
-  { name: "get_top_holders_of_protocol", call: (s) => s.protocolService.getTopHoldersOfProtocol({ id: "uniswap" }) },
-  { name: "get_pool_information", call: (s) => s.protocolService.getPoolInformation({ id: "0x00000000219ab540356cbb839cbe05303d7705fa", chain_id: "eth" }) },
+  {
+    name: "get_all_protocols_of_supported_chains",
+    call: (s) => s.protocolService.getAllProtocolsOfSupportedChains({}),
+    expect: { method: "GET", urlIncludes: ["/protocol/all_list"] },   // verify the v0.1 path in protocol.service.ts and adjust if different
+  },
+  {
+    name: "get_protocol_information",
+    call: (s) => s.protocolService.getProtocolInformation({ id: "uniswap" }),
+    expect: { method: "GET", urlIncludes: ["/protocol", "id=uniswap"] },
+  },
+  {
+    name: "get_top_holders_of_protocol",
+    call: (s) => s.protocolService.getTopHoldersOfProtocol({ id: "uniswap" }),
+    expect: { method: "GET", urlIncludes: ["/protocol/top_holders", "id=uniswap"] },
+  },
+  {
+    name: "get_pool_information",
+    call: (s) => s.protocolService.getPoolInformation({ id: "0x00000000219ab540356cbb839cbe05303d7705fa", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/pool", "id=0x0000", "chain_id=eth"] },
+  },
   // Token (4)
-  { name: "get_token_information", call: (s) => s.tokenService.getTokenInformation({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }) },
-  { name: "get_list_token_information", call: (s) => s.tokenService.getListTokenInformation({ chain_id: "eth", ids: "0xdac17f958d2ee523a2206206994597c13d831ec7" }) },
-  { name: "get_top_holders_of_token", call: (s) => s.tokenService.getTopHoldersOfToken({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }) },
-  { name: "get_token_history_price", call: (s) => s.tokenService.getTokenHistoryPrice({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth", date_at: "2024-01-01" }) },
-  // User (18)
-  { name: "get_user_used_chain_list", call: (s) => s.userService.getUserUsedChainList({ id: "0xabc" }) },
-  { name: "get_user_chain_balance", call: (s) => s.userService.getUserChainBalance({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_protocol", call: (s) => s.userService.getUserProtocol({ id: "0xabc", protocol_id: "uniswap" }) },
-  { name: "get_user_complex_protocol_list", call: (s) => s.userService.getUserComplexProtocolList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_all_complex_protocol_list", call: (s) => s.userService.getUserAllComplexProtocolList({ id: "0xabc" }) },
-  { name: "get_user_all_simple_protocol_list", call: (s) => s.userService.getUserAllSimpleProtocolList({ id: "0xabc" }) },
-  { name: "get_user_token_balance", call: (s) => s.userService.getUserTokenBalance({ id: "0xabc", chain_id: "eth", token_id: "0xdac17f958d2ee523a2206206994597c13d831ec7" }) },
-  { name: "get_user_token_list", call: (s) => s.userService.getUserTokenList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_all_token_list", call: (s) => s.userService.getUserAllTokenList({ id: "0xabc" }) },
-  { name: "get_user_nft_list", call: (s) => s.userService.getUserNftList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_all_nft_list", call: (s) => s.userService.getUserAllNftList({ id: "0xabc" }) },
-  { name: "get_user_history_list", call: (s) => s.userService.getUserHistoryList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_all_history_list", call: (s) => s.userService.getUserAllHistoryList({ id: "0xabc" }) },
-  { name: "get_user_token_authorized_list", call: (s) => s.userService.getUserTokenAuthorizedList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_nft_authorized_list", call: (s) => s.userService.getUserNftAuthorizedList({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_total_balance", call: (s) => s.userService.getUserTotalBalance({ id: "0xabc" }) },
-  { name: "get_user_chain_net_curve", call: (s) => s.userService.getUserChainNetCurve({ id: "0xabc", chain_id: "eth" }) },
-  { name: "get_user_total_net_curve", call: (s) => s.userService.getUserTotalNetCurve({ id: "0xabc" }) },
-  // Transaction (2)
-  { name: "pre_exec_transaction", call: (s) => s.transactionService.preExecTransaction({ tx: "{\"from\":\"0xabc\"}" }) },
-  { name: "explain_transaction", call: (s) => s.transactionService.explainTransaction({ tx: "{\"data\":\"0x\"}" }) },
+  {
+    name: "get_token_information",
+    call: (s) => s.tokenService.getTokenInformation({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/token", "id=0xdac17f9", "chain_id=eth"] },
+  },
+  {
+    name: "get_list_token_information",
+    call: (s) => s.tokenService.getListTokenInformation({ chain_id: "eth", ids: "0xdac17f958d2ee523a2206206994597c13d831ec7" }),
+    expect: { method: "GET", urlIncludes: ["/token/list", "chain_id=eth", "ids=0xdac17f9"] },
+  },
+  {
+    name: "get_top_holders_of_token",
+    call: (s) => s.tokenService.getTopHoldersOfToken({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/token/top_holders", "id=0xdac17f9", "chain_id=eth"] },
+  },
+  {
+    name: "get_token_history_price",
+    call: (s) => s.tokenService.getTokenHistoryPrice({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth", date_at: "2024-01-01" }),
+    expect: { method: "GET", urlIncludes: ["/token/history_price", "id=0xdac17f9", "chain_id=eth", "date_at=2024-01-01"] },
+  },
+  // User (18) — urlIncludes assert the path and required query keys.
+  // The wallet id "0xabc" is short on purpose so the substring check passes.
+  {
+    name: "get_user_used_chain_list",
+    call: (s) => s.userService.getUserUsedChainList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/used_chain_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_chain_balance",
+    call: (s) => s.userService.getUserChainBalance({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/chain_balance", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_protocol",
+    call: (s) => s.userService.getUserProtocol({ id: "0xabc", protocol_id: "uniswap" }),
+    expect: { method: "GET", urlIncludes: ["/user/protocol", "id=0xabc", "protocol_id=uniswap"] },
+  },
+  {
+    name: "get_user_complex_protocol_list",
+    call: (s) => s.userService.getUserComplexProtocolList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/complex_protocol_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_all_complex_protocol_list",
+    call: (s) => s.userService.getUserAllComplexProtocolList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/all_complex_protocol_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_all_simple_protocol_list",
+    call: (s) => s.userService.getUserAllSimpleProtocolList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/all_simple_protocol_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_token_balance",
+    call: (s) => s.userService.getUserTokenBalance({ id: "0xabc", chain_id: "eth", token_id: "0xdac17f958d2ee523a2206206994597c13d831ec7" }),
+    expect: { method: "GET", urlIncludes: ["/user/token", "id=0xabc", "chain_id=eth", "token_id=0xdac17f9"] },
+  },
+  {
+    name: "get_user_token_list",
+    call: (s) => s.userService.getUserTokenList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/token_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_all_token_list",
+    call: (s) => s.userService.getUserAllTokenList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/all_token_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_nft_list",
+    call: (s) => s.userService.getUserNftList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/nft_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_all_nft_list",
+    call: (s) => s.userService.getUserAllNftList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/all_nft_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_history_list",
+    call: (s) => s.userService.getUserHistoryList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/history_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_all_history_list",
+    call: (s) => s.userService.getUserAllHistoryList({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/all_history_list", "id=0xabc"] },
+  },
+  {
+    name: "get_user_token_authorized_list",
+    call: (s) => s.userService.getUserTokenAuthorizedList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/token_authorized_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_nft_authorized_list",
+    call: (s) => s.userService.getUserNftAuthorizedList({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/nft_authorized_list", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_total_balance",
+    call: (s) => s.userService.getUserTotalBalance({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/total_balance", "id=0xabc"] },
+  },
+  {
+    name: "get_user_chain_net_curve",
+    call: (s) => s.userService.getUserChainNetCurve({ id: "0xabc", chain_id: "eth" }),
+    expect: { method: "GET", urlIncludes: ["/user/chain_net_curve", "id=0xabc", "chain_id=eth"] },
+  },
+  {
+    name: "get_user_total_net_curve",
+    call: (s) => s.userService.getUserTotalNetCurve({ id: "0xabc" }),
+    expect: { method: "GET", urlIncludes: ["/user/total_net_curve", "id=0xabc"] },
+  },
+  // Transaction (2) — POST body assertions catch silent body-shape regressions.
+  {
+    name: "pre_exec_transaction",
+    call: (s) => s.transactionService.preExecTransaction({ tx: "{\"from\":\"0xabc\"}" }),
+    expect: { method: "POST", urlIncludes: ["/wallet/pre_exec_tx"], body: { tx: { from: "0xabc" } } },   // verify shape against v0.1 transaction.service.ts and adjust
+  },
+  {
+    name: "explain_transaction",
+    call: (s) => s.transactionService.explainTransaction({ tx: "{\"data\":\"0x\"}" }),
+    expect: { method: "POST", urlIncludes: ["/wallet/explain_tx"], body: { tx: { data: "0x" } } },
+  },
 ];
 ```
+
+**Note on `urlIncludes` paths:** the literal endpoint paths above are the conventional DeBank routes. If a v0.1 service method uses a different path (e.g. `/v1/wallet/pre_exec_tx` vs `/wallet/pre_exec_tx`), update the substring to match what's in [src/services/](../../../src/services/) — these are assertions about what the v0.1 code does, not aspirational paths. The substring-match (not exact-match) tolerates query-arg reordering across implementations.
 
 - [ ] **Step 2: Create the baseline script that consumes the shared table**
 
@@ -2752,7 +2895,7 @@ const mini = new MiniSearch<IndexEntry & { id: string }>({
   },
 });
 mini.addAll(
-  ENTRIES.map((e, i) => ({
+  ENTRIES.map((e) => ({
     ...e,
     id: e.kind === "method" ? e.name : e.id,
     // MiniSearch needs all searchable fields present even if undefined
@@ -3692,19 +3835,32 @@ describe("service markdown snapshots", () => {
   // of axios/MSW.
   let origFetch: unknown;
   let origPost: unknown;
+  // Per-call recording so each `it` can assert the request its method
+  // actually produced (URL fragments, method, body) before checking the
+  // markdown snapshot. Markdown parity alone wouldn't catch a regression
+  // that drops `date_at` from the URL but happens to round-trip the same
+  // fixture; the URL/body assertions cover the structural side.
+  type RequestLog = { method: "GET" | "POST"; url: string; cacheDuration?: number; body?: unknown };
+  let lastRequest: RequestLog | undefined;
 
   beforeAll(async () => {
     const { BaseService } = await import("../../src/services/base.service.js");
     const proto = BaseService.prototype as unknown as Record<string, unknown>;
     origFetch = proto.fetchWithToolConfig;
     origPost = proto.postWithToolConfig;
-    const stub = async function () {
+    const loadFixture = async () => {
       const key = (globalThis as Record<string, unknown>).__SNAPSHOT_KEY as string;
       const raw = await fs.readFile(path.join(fixturesDir, `${key}.json`), "utf-8");
       return JSON.parse(raw);
     };
-    proto.fetchWithToolConfig = stub;
-    proto.postWithToolConfig = stub;
+    proto.fetchWithToolConfig = async function (url: string, cacheDuration?: number) {
+      lastRequest = { method: "GET", url, cacheDuration };
+      return loadFixture();
+    };
+    proto.postWithToolConfig = async function (url: string, body: unknown) {
+      lastRequest = { method: "POST", url, body };
+      return loadFixture();
+    };
     const mod = await import("../../src/services/index.js");
     services = {
       chainService: mod.chainService,
@@ -3723,9 +3879,22 @@ describe("service markdown snapshots", () => {
   });
 
   for (const inv of INVOCATIONS) {
-    it(`${inv.name} matches committed snapshot`, async () => {
+    it(`${inv.name} produces the expected request AND matches committed markdown`, async () => {
       (globalThis as Record<string, unknown>).__SNAPSHOT_KEY = inv.name;
+      lastRequest = undefined;
       const md = await inv.call(services);
+
+      // Structural assertions on the request
+      expect(lastRequest, `${inv.name} did not call fetchWithToolConfig / postWithToolConfig`).toBeDefined();
+      expect(lastRequest!.method).toBe(inv.expect.method);
+      for (const fragment of inv.expect.urlIncludes) {
+        expect(lastRequest!.url, `expected URL to contain ${fragment}`).toContain(fragment);
+      }
+      if (inv.expect.body !== undefined) {
+        expect(lastRequest!.body).toEqual(inv.expect.body);
+      }
+
+      // Markdown parity
       const expected = await fs.readFile(path.join(snapshotsDir, `${inv.name}.md`), "utf-8");
       expect(md).toBe(expected);
     });
@@ -3917,25 +4086,43 @@ git commit -m "test(mcp/legacy): child-process side-effect-freeness check for to
 - [ ] **Step 1: Run the full build**
 
 Run: `pnpm run build`
-Expected: clean build, no errors. `dist/` is fresh.
+Expected: clean build, no errors. `dist/` is fresh. `prebuild` regenerated `src/mcp/search-docs/embedded-index.ts` and `src/mcp/instructions/instructions.generated.ts`.
 
-- [ ] **Step 2: Run the linter**
+- [ ] **Step 2: Verify generated files are committed and unmodified**
+
+`prebuild` rewrote two committed files. If the generators emit something different from the committed copies, CI will see a working-tree diff and the PR is stale. Catch that here:
+
+```bash
+git diff --exit-code src/mcp/search-docs/embedded-index.ts src/mcp/instructions/instructions.generated.ts
+```
+
+Expected: no output, exit code 0.
+
+If there's a diff, the generated content drifted from what was committed in Task 15 / Task 16. Two cases:
+1. Legitimate update (you edited `tool-metadata.ts`, `cookbook/`, or `instructions.md`) → commit the regenerated files in the same commit as the source change. Re-run from Step 1.
+2. Non-deterministic generator output → fix the generator. Likely culprits: object-key ordering (use sorted keys), `Date.now()` in the output (don't), float-vs-string ambiguity.
+
+- [ ] **Step 3: Run the linter**
 
 Run: `pnpm lint`
-Expected: no Biome errors. This repo's Biome config requires tabs and specific formatting; new/generated TS files (`embedded-index.ts`, `instructions.generated.ts`, every new module under `src/mcp/`, every new test file under `tests/integration/`) must satisfy it. CI also runs `pnpm lint` (.github/workflows/test.yml), so anything that slips here will fail the PR check.
+Expected: no Biome errors. The lint step runs AFTER the build/diff check because lint passing on stale generated files is worthless — Step 2 proves the committed artifacts match what the generators emit, then Step 3 proves what they emit is Biome-clean.
+
+This repo's Biome config requires tabs and specific formatting; new/generated TS files (`embedded-index.ts`, `instructions.generated.ts`, every new module under `src/mcp/`, every new test file under `tests/integration/`) must satisfy it. CI also runs `pnpm lint` (.github/workflows/test.yml), so anything that slips here fails the PR check.
 
 If lint fails on a generated file, fix the generator's emit format (not the generated file by hand — that gets overwritten on the next `prebuild`).
 
 If lint fails on hand-written files, run `pnpm run format` to auto-fix the safe ones and inspect any remaining diagnostics.
 
-- [ ] **Step 3: Run the full test suite**
+- [ ] **Step 4: Run the full test suite**
 
 Run: `pnpm test`
 Expected: every test passes. Lots of them now — ~30+ unit tests across modules, ~30 service-snapshot regressions, ~10 integration tests.
 
+`pretest` will fire `pnpm run build` again; that's redundant after Step 1 but harmless (the generator outputs are deterministic so Step 2's diff still passes).
+
 If anything fails, fix and commit before declaring done.
 
-- [ ] **Step 4: Sanity-check the server boots and responds to `initialize`**
+- [ ] **Step 5: Sanity-check the server boots and responds to `initialize`**
 
 FastMCP stdio servers do NOT proactively announce ready — they wait for the client to send `initialize`. Drive the handshake manually:
 
@@ -3949,7 +4136,7 @@ EOF
 
 Expected: two JSON-RPC responses on stdout. The second includes `execute`, `search_docs`, `debank_resolve`, `debank_get_supported_chain_list`. The process exits cleanly when stdin closes after the heredoc.
 
-- [ ] **Step 5: Sanity-check legacy mode**
+- [ ] **Step 6: Sanity-check legacy mode**
 
 ```bash
 DEBANK_API_KEY=sanity node dist/index.js --legacy-tools <<EOF
@@ -3961,7 +4148,7 @@ EOF
 
 Expected: a "Legacy tools enabled" log line on stderr; the `tools/list` response now also includes the 30 hidden legacy tools (e.g. `debank_get_user_chain_balance`).
 
-- [ ] **Step 6: Final commit (only if anything changed during sanity checks)**
+- [ ] **Step 7: Final commit (only if anything changed during sanity checks)**
 
 ```bash
 git status
