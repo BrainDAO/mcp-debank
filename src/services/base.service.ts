@@ -13,6 +13,8 @@ import { LLMDataFilter } from "../lib/utils/data-filter.js";
 import { createChildLogger, extractErrorMessage } from "../lib/utils/index.js";
 import { toMarkdown } from "../lib/utils/markdown-formatter.js";
 
+export type RequestOptions = { signal?: AbortSignal; timeout?: number };
+
 const logger = createChildLogger("DeBank MCP Base Service");
 
 // Initialize tiktoken encoder for token counting
@@ -50,12 +52,13 @@ export abstract class BaseService {
 	protected async fetchWithToolConfig<T>(
 		url: string,
 		cacheDuration = this.DEFAULT_CACHE_TTL_SECONDS,
+		options?: RequestOptions,
 	): Promise<T> {
 		// Use IQ Gateway if configured, otherwise make direct API calls
 		if (env.IQ_GATEWAY_URL && env.IQ_GATEWAY_KEY) {
-			return this.fetchViaGateway<T>(url, cacheDuration);
+			return this.fetchViaGateway<T>(url, cacheDuration, options);
 		}
-		return this.fetchDirect<T>(url);
+		return this.fetchDirect<T>(url, options);
 	}
 
 	/**
@@ -64,6 +67,7 @@ export abstract class BaseService {
 	private async fetchViaGateway<T>(
 		url: string,
 		cacheDuration: number,
+		options?: RequestOptions,
 	): Promise<T> {
 		if (!env.IQ_GATEWAY_URL || !env.IQ_GATEWAY_KEY) {
 			throw new Error(
@@ -87,6 +91,8 @@ export abstract class BaseService {
 					"Content-Type": "application/json",
 					"x-api-key": env.IQ_GATEWAY_KEY,
 				},
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeout ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
@@ -97,7 +103,10 @@ export abstract class BaseService {
 	/**
 	 * Fetch data directly from DeBank API
 	 */
-	private async fetchDirect<T>(url: string): Promise<T> {
+	private async fetchDirect<T>(
+		url: string,
+		options?: RequestOptions,
+	): Promise<T> {
 		try {
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
@@ -108,7 +117,11 @@ export abstract class BaseService {
 				headers["AccessKey"] = env.DEBANK_API_KEY;
 			}
 
-			const response = await axios.get<T>(url, { headers });
+			const response = await axios.get<T>(url, {
+				headers,
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeout ? { timeout: options.timeout } : {}),
+			});
 			return response.data;
 		} catch (error: unknown) {
 			throw extractErrorMessage(error);
@@ -118,14 +131,19 @@ export abstract class BaseService {
 	protected async postWithToolConfig<T>(
 		url: string,
 		body: unknown,
+		options?: RequestOptions,
 	): Promise<T> {
 		if (env.IQ_GATEWAY_URL && env.IQ_GATEWAY_KEY) {
-			return this.postViaGateway<T>(url, body);
+			return this.postViaGateway<T>(url, body, options);
 		}
-		return this.postDirect<T>(url, body);
+		return this.postDirect<T>(url, body, options);
 	}
 
-	private async postViaGateway<T>(url: string, body: unknown): Promise<T> {
+	private async postViaGateway<T>(
+		url: string,
+		body: unknown,
+		options?: RequestOptions,
+	): Promise<T> {
 		const proxyUrl = new URL(env.IQ_GATEWAY_URL!);
 		proxyUrl.searchParams.append("url", url);
 		proxyUrl.searchParams.append("method", "POST");
@@ -137,6 +155,8 @@ export abstract class BaseService {
 					"Content-Type": "application/json",
 					"x-api-key": env.IQ_GATEWAY_KEY!,
 				},
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeout ? { timeout: options.timeout } : {}),
 			});
 			return response.data;
 		} catch (error: unknown) {
@@ -144,7 +164,11 @@ export abstract class BaseService {
 		}
 	}
 
-	private async postDirect<T>(url: string, body: unknown): Promise<T> {
+	private async postDirect<T>(
+		url: string,
+		body: unknown,
+		options?: RequestOptions,
+	): Promise<T> {
 		try {
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
@@ -154,7 +178,11 @@ export abstract class BaseService {
 				headers["AccessKey"] = env.DEBANK_API_KEY;
 			}
 
-			const response = await axios.post<T>(url, body, { headers });
+			const response = await axios.post<T>(url, body, {
+				headers,
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeout ? { timeout: options.timeout } : {}),
+			});
 			return response.data;
 		} catch (error: unknown) {
 			throw extractErrorMessage(error);
