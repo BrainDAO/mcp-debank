@@ -92,4 +92,20 @@ describe("runInSandbox guest globals", () => {
 		expect(r.log_lines).toEqual(["a"]);
 		expect(r.err_lines).toEqual(["b"]);
 	});
+
+	it("console.log with a circular object does not crash the execute call", async () => {
+		const r = await runInSandbox(
+			`async function run(){
+				const o = { a: 1 };
+				o.self = o;
+				console.log(o);
+				return "ok";
+			}`,
+			async () => {},
+		);
+		expect(r.ok).toBe(true);
+		expect(r.result).toBe("ok");
+		// The fallback path emits String(x) for cyclic objects → "[object Object]"
+		expect(r.log_lines).toEqual(["[object Object]"]);
+	});
 });

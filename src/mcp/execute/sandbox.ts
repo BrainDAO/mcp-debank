@@ -99,7 +99,10 @@ export async function runInSandbox(
 		// execute is supposed to return console output, so dropped args =
 		// silently lost log lines.
 		await context.evalClosure(
-			`const __fmt = (a) => a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ');
+			`const __fmt = (a) => a.map((x) => {
+			   if (typeof x === 'string') return x;
+			   try { return JSON.stringify(x); } catch { return String(x); }
+			 }).join(' ');
 			 globalThis.console = {
 			   log:   (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
 			   warn:  (...a) => $0.applyIgnored(undefined, [__fmt(a)]),
