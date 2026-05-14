@@ -82,10 +82,23 @@ export async function resolveChains(
 	}
 }
 
+// Recognised keywords that refer to a chain's wrapped native token.
+// Must stay in sync with `needsResolution`'s wrappedTokenKeywords list in
+// src/lib/utils/validators.ts — both lists must agree on what qualifies.
+const WRAPPED_TOKEN_KEYWORDS = ["weth", "wrapped native", "native token"];
+
 export function resolveWrappedToken(
 	tokenKeyword: string,
 	chainId: string,
 ): string | null {
+	if (
+		typeof tokenKeyword !== "string" ||
+		!WRAPPED_TOKEN_KEYWORDS.includes(tokenKeyword.trim().toLowerCase())
+	) {
+		// Not a recognised wrapped-token keyword — return null so callers don't
+		// silently get the chain's WETH for "USDT" or any other unrelated symbol.
+		return null;
+	}
 	try {
 		const chain = chainIds.find((c) => c.id === chainId);
 
