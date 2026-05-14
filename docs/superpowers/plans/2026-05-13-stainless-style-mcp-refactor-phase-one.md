@@ -2427,8 +2427,13 @@ describe("runInSandbox guest globals", () => {
     try {
       const { runInSandbox: rs } = await import("./sandbox.js");
       const start = Date.now();
+      // The guest code below: sleep clamps to exactly SCRIPT_DEADLINE_MS, and
+      // the outer Promise.race deadline also fires at exactly that mark — so
+      // a guest body of `await sleep(99999999); return "never"` is a flip-coin
+      // race. Append a never-settling promise so the outer race MUST fire no
+      // matter which side of the boundary sleep resolves on.
       const r = await rs(
-        `async function run(){ await sleep(99999999); return "never"; }`,
+        `async function run(){ await sleep(99999999); await new Promise(() => {}); return "never"; }`,
         async () => {},
       );
       const elapsed = Date.now() - start;
