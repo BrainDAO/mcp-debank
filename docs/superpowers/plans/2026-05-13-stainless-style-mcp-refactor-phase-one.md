@@ -720,8 +720,21 @@ export type Services = {
 
 export type ExpectedRequest = {
   method: "GET" | "POST";
-  /** Substring(s) that MUST appear in the URL passed to fetchWithToolConfig / postWithToolConfig. */
-  urlIncludes: string[];
+  /**
+   * Exact pathname the method should hit (e.g. "/v1/chain"). The base URL is
+   * `${config.baseUrl}` = "https://pro-openapi.debank.com/v1" — pathnames
+   * therefore include the "/v1" prefix.
+   */
+  pathname: string;
+  /** Exact query params. Deep-equal compared, not substring. */
+  searchParams: Record<string, string>;
+  /**
+   * Expected cacheDuration (seconds) passed to fetchWithToolConfig. Catches
+   * TTL regressions — a refactor that swaps `chainDataLifeTime` for
+   * `debankDefaultLifeTime` is a behavior change even if both happen to be
+   * 300 today. Omit only when v0.1 itself used the default.
+   */
+  cacheDurationSeconds?: number;
   /** For POST: the exact body object the method should pass. */
   body?: unknown;
 };
@@ -732,178 +745,189 @@ export type Invocation = {
   expect: ExpectedRequest;
 };
 
+// Cache TTL constants — must match config.ts. Sourced literally from
+// src/config.ts; do NOT compute or import to avoid coupling test fixtures
+// to runtime config.
+const TTL = {
+  default: 300,           // config.debankDefaultLifeTime
+  chainData: 300,         // config.chainDataLifeTime
+  gasPrice: 60,           // config.gasPriceLifeTime
+  poolData: 600,          // config.poolDataLifeTime
+  supportedChainList: 604800, // config.supportedChainListLifeTime
+  protocolsList: 604800,  // config.protocolsListLifeTime
+} as const;
+
 export const INVOCATIONS: Invocation[] = [
   // Chain (3)
   {
     name: "get_supported_chain_list",
     call: (s) => s.chainService.getSupportedChainList(),
-    expect: { method: "GET", urlIncludes: ["/chain/list"] },
+    expect: { method: "GET", pathname: "/v1/chain/list", searchParams: {}, cacheDurationSeconds: TTL.supportedChainList },
   },
   {
     name: "get_chain",
     call: (s) => s.chainService.getChain({ id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/chain", "id=eth"] },
+    expect: { method: "GET", pathname: "/v1/chain", searchParams: { id: "eth" }, cacheDurationSeconds: TTL.chainData },
   },
   {
     name: "get_gas_prices",
     call: (s) => s.chainService.getGasPrices({ chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/wallet/gas_market", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/wallet/gas_market", searchParams: { chain_id: "eth" }, cacheDurationSeconds: TTL.gasPrice },
   },
   // Protocol (4)
   {
     name: "get_all_protocols_of_supported_chains",
     call: (s) => s.protocolService.getAllProtocolsOfSupportedChains({}),
-    expect: { method: "GET", urlIncludes: ["/protocol/all_list"] },   // verify the v0.1 path in protocol.service.ts and adjust if different
+    expect: { method: "GET", pathname: "/v1/protocol/all_list", searchParams: {}, cacheDurationSeconds: TTL.protocolsList },
   },
   {
     name: "get_protocol_information",
     call: (s) => s.protocolService.getProtocolInformation({ id: "uniswap" }),
-    expect: { method: "GET", urlIncludes: ["/protocol", "id=uniswap"] },
+    expect: { method: "GET", pathname: "/v1/protocol", searchParams: { id: "uniswap" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_top_holders_of_protocol",
     call: (s) => s.protocolService.getTopHoldersOfProtocol({ id: "uniswap" }),
-    expect: { method: "GET", urlIncludes: ["/protocol/top_holders", "id=uniswap"] },
+    expect: { method: "GET", pathname: "/v1/protocol/top_holders", searchParams: { id: "uniswap" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_pool_information",
     call: (s) => s.protocolService.getPoolInformation({ id: "0x00000000219ab540356cbb839cbe05303d7705fa", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/pool", "id=0x0000", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/pool", searchParams: { id: "0x00000000219ab540356cbb839cbe05303d7705fa", chain_id: "eth" }, cacheDurationSeconds: TTL.poolData },
   },
   // Token (4)
   {
     name: "get_token_information",
     call: (s) => s.tokenService.getTokenInformation({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/token", "id=0xdac17f9", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/token", searchParams: { id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_list_token_information",
     call: (s) => s.tokenService.getListTokenInformation({ chain_id: "eth", ids: "0xdac17f958d2ee523a2206206994597c13d831ec7" }),
-    expect: { method: "GET", urlIncludes: ["/token/list", "chain_id=eth", "ids=0xdac17f9"] },
+    expect: { method: "GET", pathname: "/v1/token/list", searchParams: { chain_id: "eth", ids: "0xdac17f958d2ee523a2206206994597c13d831ec7" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_top_holders_of_token",
     call: (s) => s.tokenService.getTopHoldersOfToken({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/token/top_holders", "id=0xdac17f9", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/token/top_holders", searchParams: { id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_token_history_price",
     call: (s) => s.tokenService.getTokenHistoryPrice({ id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth", date_at: "2024-01-01" }),
-    expect: { method: "GET", urlIncludes: ["/token/history_price", "id=0xdac17f9", "chain_id=eth", "date_at=2024-01-01"] },
+    expect: { method: "GET", pathname: "/v1/token/history_price", searchParams: { id: "0xdac17f958d2ee523a2206206994597c13d831ec7", chain_id: "eth", date_at: "2024-01-01" }, cacheDurationSeconds: TTL.default },
   },
-  // User (18) — urlIncludes assert the path and required query keys.
-  // The wallet id "0xabc" is short on purpose so the substring check passes.
+  // User (18)
   {
     name: "get_user_used_chain_list",
     call: (s) => s.userService.getUserUsedChainList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/used_chain_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/used_chain_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_chain_balance",
     call: (s) => s.userService.getUserChainBalance({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/chain_balance", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/chain_balance", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_protocol",
     call: (s) => s.userService.getUserProtocol({ id: "0xabc", protocol_id: "uniswap" }),
-    expect: { method: "GET", urlIncludes: ["/user/protocol", "id=0xabc", "protocol_id=uniswap"] },
+    expect: { method: "GET", pathname: "/v1/user/protocol", searchParams: { id: "0xabc", protocol_id: "uniswap" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_complex_protocol_list",
     call: (s) => s.userService.getUserComplexProtocolList({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/complex_protocol_list", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/complex_protocol_list", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_all_complex_protocol_list",
     call: (s) => s.userService.getUserAllComplexProtocolList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/all_complex_protocol_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/all_complex_protocol_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_all_simple_protocol_list",
     call: (s) => s.userService.getUserAllSimpleProtocolList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/all_simple_protocol_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/all_simple_protocol_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_token_balance",
     call: (s) => s.userService.getUserTokenBalance({ id: "0xabc", chain_id: "eth", token_id: "0xdac17f958d2ee523a2206206994597c13d831ec7" }),
-    expect: { method: "GET", urlIncludes: ["/user/token", "id=0xabc", "chain_id=eth", "token_id=0xdac17f9"] },
+    expect: { method: "GET", pathname: "/v1/user/token", searchParams: { id: "0xabc", chain_id: "eth", token_id: "0xdac17f958d2ee523a2206206994597c13d831ec7" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_token_list",
     call: (s) => s.userService.getUserTokenList({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/token_list", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/token_list", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_all_token_list",
     call: (s) => s.userService.getUserAllTokenList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/all_token_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/all_token_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_nft_list",
     call: (s) => s.userService.getUserNftList({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/nft_list", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/nft_list", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_all_nft_list",
     call: (s) => s.userService.getUserAllNftList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/all_nft_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/all_nft_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_history_list",
     call: (s) => s.userService.getUserHistoryList({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/history_list", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/history_list", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_all_history_list",
     call: (s) => s.userService.getUserAllHistoryList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/all_history_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/all_history_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     // v0.1 signature is `{id: string}` only — getUserTokenAuthorizedList
     // ignores chain_id and queries cross-chain. Preserve that for phase-one
-    // parity (deciding whether to add chain_id is a separate bug-fix
-    // proposal). Reference: src/services/user.service.ts:370.
+    // parity. Reference: src/services/user.service.ts:370.
     name: "get_user_token_authorized_list",
     call: (s) => s.userService.getUserTokenAuthorizedList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/token_authorized_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/token_authorized_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     // Same v0.1 shape as above — id only, no chain_id.
     // Reference: src/services/user.service.ts:386.
     name: "get_user_nft_authorized_list",
     call: (s) => s.userService.getUserNftAuthorizedList({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/nft_authorized_list", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/nft_authorized_list", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_total_balance",
     call: (s) => s.userService.getUserTotalBalance({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/total_balance", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/total_balance", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_chain_net_curve",
     call: (s) => s.userService.getUserChainNetCurve({ id: "0xabc", chain_id: "eth" }),
-    expect: { method: "GET", urlIncludes: ["/user/chain_net_curve", "id=0xabc", "chain_id=eth"] },
+    expect: { method: "GET", pathname: "/v1/user/chain_net_curve", searchParams: { id: "0xabc", chain_id: "eth" }, cacheDurationSeconds: TTL.default },
   },
   {
     name: "get_user_total_net_curve",
     call: (s) => s.userService.getUserTotalNetCurve({ id: "0xabc" }),
-    expect: { method: "GET", urlIncludes: ["/user/total_net_curve", "id=0xabc"] },
+    expect: { method: "GET", pathname: "/v1/user/total_net_curve", searchParams: { id: "0xabc" }, cacheDurationSeconds: TTL.default },
   },
   // Transaction (2) — POST body assertions catch silent body-shape regressions.
+  // cacheDurationSeconds is omitted because postWithToolConfig doesn't take a TTL.
   {
     name: "pre_exec_transaction",
     call: (s) => s.transactionService.preExecTransaction({ tx: "{\"from\":\"0xabc\"}" }),
-    expect: { method: "POST", urlIncludes: ["/wallet/pre_exec_tx"], body: { tx: { from: "0xabc" } } },   // verify shape against v0.1 transaction.service.ts and adjust
+    expect: { method: "POST", pathname: "/v1/wallet/pre_exec_tx", searchParams: {}, body: { tx: { from: "0xabc" } } },
   },
   {
     name: "explain_transaction",
     call: (s) => s.transactionService.explainTransaction({ tx: "{\"data\":\"0x\"}" }),
-    expect: { method: "POST", urlIncludes: ["/wallet/explain_tx"], body: { tx: { data: "0x" } } },
+    expect: { method: "POST", pathname: "/v1/wallet/explain_tx", searchParams: {}, body: { tx: { data: "0x" } } },
   },
 ];
 ```
 
-**Note on `urlIncludes` paths:** the literal endpoint paths above are the conventional DeBank routes. If a v0.1 service method uses a different path (e.g. `/v1/wallet/pre_exec_tx` vs `/wallet/pre_exec_tx`), update the substring to match what's in [src/services/](../../../src/services/) — these are assertions about what the v0.1 code does, not aspirational paths. The substring-match (not exact-match) tolerates query-arg reordering across implementations.
+**Verify before running the baseline:** the `pathname`, `searchParams`, `cacheDurationSeconds`, and POST `body` shapes above are the v0.1 contract being frozen. Before running `pnpm exec tsx scripts/snapshot-baseline.ts`, open each service file under [src/services/](../../../src/services/) and confirm: (1) the URL pattern, (2) the cache-duration argument passed to `fetchWithToolConfig`, (3) the POST body for the two transaction methods. If any literal above doesn't match v0.1, update it — the snapshots are the oracle for markdown, this table is the oracle for request shape.
 
 - [ ] **Step 2: Create the baseline script that consumes the shared table**
 
@@ -940,16 +964,55 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const fixturesDir = path.join(repoRoot, "tests/fixtures/services");
 const snapshotsDir = path.join(repoRoot, "tests/snapshots/services");
 
+type RequestLog = { method: "GET" | "POST"; url: string; cacheDuration?: number; body?: unknown };
+const lastRequest: { value: RequestLog | undefined } = { value: undefined };
+
 async function stubFetchers() {
   const { BaseService } = await import("../src/services/base.service.js");
   const proto = BaseService.prototype as unknown as Record<string, unknown>;
-  const stub = async function () {
+  const loadFixture = async () => {
     const key = (globalThis as Record<string, unknown>).__SNAPSHOT_KEY as string;
     const raw = await fs.readFile(path.join(fixturesDir, `${key}.json`), "utf-8");
     return JSON.parse(raw);
   };
-  proto.fetchWithToolConfig = stub;
-  proto.postWithToolConfig = stub;
+  proto.fetchWithToolConfig = async function (url: string, cacheDuration?: number) {
+    lastRequest.value = { method: "GET", url, cacheDuration };
+    return loadFixture();
+  };
+  proto.postWithToolConfig = async function (url: string, body: unknown) {
+    lastRequest.value = { method: "POST", url, body };
+    return loadFixture();
+  };
+}
+
+/** Compare the recorded request against the expected metadata. Throws on mismatch. */
+function assertRequestMatches(name: string, expected: import("../tests/fixtures/invocations.js").ExpectedRequest, got: RequestLog | undefined): void {
+  if (!got) throw new Error(`${name}: no request was recorded`);
+  if (got.method !== expected.method) {
+    throw new Error(`${name}: expected method ${expected.method}, got ${got.method}`);
+  }
+  const parsed = new URL(got.url);
+  if (parsed.pathname !== expected.pathname) {
+    throw new Error(`${name}: expected pathname ${expected.pathname}, got ${parsed.pathname}`);
+  }
+  const actualParams: Record<string, string> = {};
+  parsed.searchParams.forEach((v, k) => { actualParams[k] = v; });
+  const expectedKeys = Object.keys(expected.searchParams).sort();
+  const actualKeys = Object.keys(actualParams).sort();
+  if (JSON.stringify(expectedKeys) !== JSON.stringify(actualKeys)) {
+    throw new Error(`${name}: searchParams keys mismatch — expected ${expectedKeys.join(",")}, got ${actualKeys.join(",")}`);
+  }
+  for (const k of expectedKeys) {
+    if (actualParams[k] !== expected.searchParams[k]) {
+      throw new Error(`${name}: searchParams.${k} expected ${JSON.stringify(expected.searchParams[k])}, got ${JSON.stringify(actualParams[k])}`);
+    }
+  }
+  if (expected.cacheDurationSeconds !== undefined && got.cacheDuration !== expected.cacheDurationSeconds) {
+    throw new Error(`${name}: expected cacheDuration ${expected.cacheDurationSeconds}, got ${got.cacheDuration}`);
+  }
+  if (expected.body !== undefined && JSON.stringify(got.body) !== JSON.stringify(expected.body)) {
+    throw new Error(`${name}: body mismatch — expected ${JSON.stringify(expected.body)}, got ${JSON.stringify(got.body)}`);
+  }
 }
 
 async function main() {
@@ -966,8 +1029,15 @@ async function main() {
   let count = 0;
   for (const inv of INVOCATIONS) {
     (globalThis as Record<string, unknown>).__SNAPSHOT_KEY = inv.name;
+    lastRequest.value = undefined;
     try {
       const md = await inv.call(services);
+      // Validate the recorded request matches the expected metadata. This
+      // confirms the v0.1 contract before we freeze the markdown snapshots —
+      // mistakes (wrong path, missing query param, dropped cache TTL) fail
+      // here instead of slipping into the baseline and surfacing later in
+      // the Task 27 regression.
+      assertRequestMatches(inv.name, inv.expect, lastRequest.value);
       await fs.writeFile(path.join(snapshotsDir, `${inv.name}.md`), md);
       count++;
       console.log(`✓ ${inv.name}`);
@@ -2404,7 +2474,7 @@ git commit -m "feat(mcp/execute): add sandbox module with three-layer timeout an
 // not Reference objects. Host body dispatches to the service singleton's
 // *Raw() method with an end-to-end AbortController + axios timeout.
 
-import { TOOL_METADATA, type ToolMetadata } from "../legacy/tool-metadata.js";
+import { TOOL_METADATA } from "../legacy/tool-metadata.js";
 import {
   chainService,
   protocolService,
@@ -3911,11 +3981,19 @@ describe("service markdown snapshots", () => {
       lastRequest = undefined;
       const md = await inv.call(services);
 
-      // Structural assertions on the request
+      // Structural assertions on the request — parsed URL, not substring.
       expect(lastRequest, `${inv.name} did not call fetchWithToolConfig / postWithToolConfig`).toBeDefined();
       expect(lastRequest!.method).toBe(inv.expect.method);
-      for (const fragment of inv.expect.urlIncludes) {
-        expect(lastRequest!.url, `expected URL to contain ${fragment}`).toContain(fragment);
+
+      const parsed = new URL(lastRequest!.url);
+      expect(parsed.pathname).toBe(inv.expect.pathname);
+      // searchParams: exact deep-equal (order-independent — both sides become objects)
+      const actualParams: Record<string, string> = {};
+      parsed.searchParams.forEach((v, k) => { actualParams[k] = v; });
+      expect(actualParams).toEqual(inv.expect.searchParams);
+
+      if (inv.expect.cacheDurationSeconds !== undefined) {
+        expect(lastRequest!.cacheDuration).toBe(inv.expect.cacheDurationSeconds);
       }
       if (inv.expect.body !== undefined) {
         expect(lastRequest!.body).toEqual(inv.expect.body);
