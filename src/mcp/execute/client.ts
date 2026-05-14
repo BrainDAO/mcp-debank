@@ -79,7 +79,7 @@ function makeHostRef(
 			timer.unref?.();
 		});
 		try {
-			const args: unknown = JSON.parse(argsJson);
+			const args: unknown = argsJson === undefined ? {} : JSON.parse(argsJson);
 			const result = await Promise.race([
 				rawFn(args, { signal: controller.signal, timeout: AXIOS_MS }),
 				abortPromise,
@@ -149,7 +149,7 @@ function parseQualified(qualified: string): [string, string] {
 const ASYNC_WRAPPER = `
 (function(ref, group, method) {
 	globalThis.debank[group][method] = async function(args) {
-		var env = await ref.apply(undefined, [JSON.stringify(args)], { result: { promise: true } });
+		var env = await ref.apply(undefined, [JSON.stringify(args ?? {})], { result: { promise: true } });
 		if (env.ok) return env.data;
 		throw new Error(env.error);
 	};

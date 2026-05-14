@@ -178,6 +178,51 @@ describe("execute/client.ts proxy forwarding", () => {
 		).toBeNull();
 	});
 
+	it("zero-arg method: debank.chain.getSupportedChainList() works without passing args", async () => {
+		const servicesMod = await import("../../services/index.js");
+		const rawSpy = vi
+			.spyOn(
+				servicesMod.chainService as unknown as {
+					getSupportedChainListRaw: (...a: unknown[]) => Promise<unknown>;
+				},
+				"getSupportedChainListRaw",
+			)
+			.mockResolvedValue([{ id: "eth", name: "Ethereum" }] as never);
+
+		const mod = await import("isolated-vm");
+		const ivm =
+			(mod as { default?: typeof import("isolated-vm") }).default ?? mod;
+		isolate = new ivm.Isolate({ memoryLimit: 64 });
+		const ctx = await isolate.createContext();
+		await ctx.global.set(
+			"debank",
+			new ivm.ExternalCopy({}).copyInto({ release: true }),
+		);
+
+		const { installDebankClient } = await import("./client.js");
+		await installDebankClient(ctx);
+
+		const script = await isolate.compileScript(
+			`(async () => { return await debank.chain.getSupportedChainList(); })()`,
+		);
+		const result = await script.run(ctx, {
+			timeout: 5_000,
+			promise: true,
+			copy: true,
+		});
+
+		expect(rawSpy).toHaveBeenCalledTimes(1);
+		// _args is undefined for zero-arg, options is the dual-timeout shape
+		expect(rawSpy).toHaveBeenCalledWith(
+			{},
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				timeout: 6_000,
+			}),
+		);
+		expect(result).toEqual([{ id: "eth", name: "Ethereum" }]);
+	});
+
 	it("errors from *Raw propagate through the Callback boundary", async () => {
 		const servicesMod = await import("../../services/index.js");
 		vi.spyOn(
