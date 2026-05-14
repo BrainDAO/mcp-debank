@@ -109,19 +109,19 @@ async function main() {
 // Re-run \`pnpm run build:docs\` to regenerate.
 
 export type MethodEntry = {
-\tkind: "method";
-\tname: string;
-\tqualified: string;
-\tdescription: string;
-\tparams: unknown;
-\texampleCall: string;
+	kind: "method";
+	name: string;
+	qualified: string;
+	description: string;
+	params: unknown;
+	exampleCall: string;
 };
 
 export type ProseEntry = {
-\tkind: "prose";
-\tid: string;
-\ttitle: string;
-\tcontent: string;
+	kind: "prose";
+	id: string;
+	title: string;
+	content: string;
 };
 
 export type IndexEntry = MethodEntry | ProseEntry;
