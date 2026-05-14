@@ -18,9 +18,11 @@ async function getIvm() {
 }
 
 const ISOLATE_MEMORY_MB = 128;
-// Test-overridable for fast CI: `DEBANK_MCP_SANDBOX_DEADLINE_MS=1000`. Production
-// callers leave it unset and get 30 s per the spec. This is a test-time knob,
-// not a public configuration surface — README intentionally omits it.
+/**
+ * Test-overridable for fast CI: `DEBANK_MCP_SANDBOX_DEADLINE_MS=1000`. Production
+ * callers leave it unset and get 30 s per the spec. This is a test-time knob,
+ * not a public configuration surface — README intentionally omits it.
+ */
 const SCRIPT_DEADLINE_MS =
 	Number(process.env.DEBANK_MCP_SANDBOX_DEADLINE_MS) || 30_000;
 const BLOCKLIST = ["process.", "require(", "import(", "eval("];
@@ -58,11 +60,13 @@ export async function runInSandbox(
 	const logLines: string[] = [];
 	const errLines: string[] = [];
 
-	// Move getIvm() and Isolate construction INSIDE the try so any failure
-	// (native addon load error, Isolate constructor throwing on a bad memory
-	// limit, etc.) gets normalized into the {ok:false} SandboxResult contract.
-	// Callers — including executeTool but also future unit tests — must be
-	// able to rely on "runInSandbox never rejects."
+	/**
+	 * Move getIvm() and Isolate construction INSIDE the try so any failure
+	 * (native addon load error, Isolate constructor throwing on a bad memory
+	 * limit, etc.) gets normalized into the {ok:false} SandboxResult contract.
+	 * Callers — including executeTool but also future unit tests — must be
+	 * able to rely on "runInSandbox never rejects."
+	 */
 	let ivm: typeof import("isolated-vm") | undefined;
 	let isolate: import("isolated-vm").Isolate | undefined;
 	let disposed = false;
@@ -86,18 +90,20 @@ export async function runInSandbox(
 			new ivm.ExternalCopy({}).copyInto({ release: true }),
 		);
 
-		// console stubs + a bounded sleep helper. The instructions teach a retry
-		// loop with `await new Promise(r => setTimeout(r, ...))`, but isolated-vm
-		// doesn't install timer globals by default. Inject a sleep(ms) Callback
-		// capped at SCRIPT_DEADLINE_MS so guest code can't burn the whole budget
-		// on a single sleep. The outer Promise.race deadline still wins.
-		//
-		// console: guest joins all args into a single space-separated string
-		// BEFORE crossing the boundary. Otherwise applyIgnored spreads `a` as
-		// positional args to the host callback, and the callback's
-		// `(line: string)` signature drops everything after the first arg —
-		// execute is supposed to return console output, so dropped args =
-		// silently lost log lines.
+		/**
+		 * console stubs + a bounded sleep helper. The instructions teach a retry
+		 * loop with `await new Promise(r => setTimeout(r, ...))`, but isolated-vm
+		 * doesn't install timer globals by default. Inject a sleep(ms) Callback
+		 * capped at SCRIPT_DEADLINE_MS so guest code can't burn the whole budget
+		 * on a single sleep. The outer Promise.race deadline still wins.
+		 *
+		 * console: guest joins all args into a single space-separated string
+		 * BEFORE crossing the boundary. Otherwise applyIgnored spreads `a` as
+		 * positional args to the host callback, and the callback's
+		 * `(line: string)` signature drops everything after the first arg —
+		 * execute is supposed to return console output, so dropped args =
+		 * silently lost log lines.
+		 */
 		await context.evalClosure(
 			`const __fmt = (a) => a.map((x) => {
 			   if (typeof x === 'string') return x;
@@ -154,10 +160,12 @@ export async function runInSandbox(
 		};
 	} catch (err) {
 		const e = err as Error & { code?: string };
-		// Isolate creation / native load failure path. When `isolate` is still
-		// undefined the failure came from getIvm() or the Isolate constructor,
-		// not from script execution. Surface as the canonical "isolated-vm
-		// native module failed to load…" wording from spec §4.4.
+		/**
+		 * Isolate creation / native load failure path. When `isolate` is still
+		 * undefined the failure came from getIvm() or the Isolate constructor,
+		 * not from script execution. Surface as the canonical "isolated-vm
+		 * native module failed to load…" wording from spec §4.4.
+		 */
 		if (!isolate) {
 			return {
 				ok: false,

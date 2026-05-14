@@ -62,18 +62,20 @@ async function stubFetchers() {
 		return JSON.parse(raw);
 	};
 	proto.fetchWithToolConfig = async (url: string, cacheDuration?: unknown) => {
-		// v0.1 default-TTL methods call fetchWithToolConfig(url) with one arg.
-		// The real method has `cacheDuration = this.DEFAULT_CACHE_TTL_SECONDS`
-		// as a parameter default, but stubbing bypasses that. Coerce ONLY
-		// undefined → 300 so INVOCATIONS' `cacheDurationSeconds: TTL.default`
-		// lines up for v0.1 one-arg callers.
-		//
-		// Refuse anything else (object, string, etc.). The dangerous refactor
-		// bug — passing `options` as the 2nd positional arg — is exactly the
-		// "non-undefined, non-number" case. Throwing here makes it impossible
-		// to mask: the baseline / regression run fails with a pointed message
-		// instead of silently defaulting to 300 and looking like everything's
-		// fine.
+		/**
+		 * v0.1 default-TTL methods call fetchWithToolConfig(url) with one arg.
+		 * The real method has `cacheDuration = this.DEFAULT_CACHE_TTL_SECONDS`
+		 * as a parameter default, but stubbing bypasses that. Coerce ONLY
+		 * undefined → 300 so INVOCATIONS' `cacheDurationSeconds: TTL.default`
+		 * lines up for v0.1 one-arg callers.
+		 *
+		 * Refuse anything else (object, string, etc.). The dangerous refactor
+		 * bug — passing `options` as the 2nd positional arg — is exactly the
+		 * "non-undefined, non-number" case. Throwing here makes it impossible
+		 * to mask: the baseline / regression run fails with a pointed message
+		 * instead of silently defaulting to 300 and looking like everything's
+		 * fine.
+		 */
 		if (cacheDuration !== undefined && typeof cacheDuration !== "number") {
 			throw new Error(
 				`fetchWithToolConfig received non-number cacheDuration (${typeof cacheDuration}); ` +

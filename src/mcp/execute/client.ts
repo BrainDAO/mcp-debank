@@ -144,8 +144,10 @@ function parseQualified(qualified: string): [string, string] {
 	return [group, method];
 }
 
-// Guest-side wrapper template: receives a Reference $0 and installs an async
-// function that JSON-serialises args, calls the host, and unpacks the envelope.
+/**
+ * Guest-side wrapper template: receives a Reference $0 and installs an async
+ * function that JSON-serialises args, calls the host, and unpacks the envelope.
+ */
 const ASYNC_WRAPPER = `
 (function(ref, group, method) {
 	globalThis.debank[group][method] = async function(args) {
@@ -167,10 +169,12 @@ const RESOLVER_WRAPPER = `
 })($0, $1)
 `.trim();
 
-// Sync variant for resolveWrappedToken — uses applySync so the guest sees a
-// plain function that returns the value directly (not a Promise). The host
-// function must be synchronous; resolveWrappedToken is a pure in-memory
-// lookup (no I/O), so applySync is safe.
+/**
+ * Sync variant for resolveWrappedToken — uses applySync so the guest sees a
+ * plain function that returns the value directly (not a Promise). The host
+ * function must be synchronous; resolveWrappedToken is a pure in-memory
+ * lookup (no I/O), so applySync is safe.
+ */
 const SYNC_RESOLVER_WRAPPER = `
 (function(ref, prop) {
 	globalThis.debank[prop] = function() {

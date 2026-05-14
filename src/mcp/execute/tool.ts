@@ -48,9 +48,11 @@ export const executeTool = {
 			};
 		}
 
-		// JSON.stringify can throw on BigInt, circular refs, or other non-JSON
-		// values returned from the sandbox. Normalize to the {ok:false} envelope
-		// so the MCP contract ("always return a valid envelope") holds.
+		/**
+		 * JSON.stringify can throw on BigInt, circular refs, or other non-JSON
+		 * values returned from the sandbox. Normalize to the {ok:false} envelope
+		 * so the MCP contract ("always return a valid envelope") holds.
+		 */
 		let inner: string;
 		let isError: boolean;
 		try {

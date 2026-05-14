@@ -1,13 +1,15 @@
 // src/services/base.service.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// IMPORTANT: do NOT statically import axios at the top of this file. With
-// `vi.resetModules()` in beforeEach, BaseService gets a fresh axios module
-// instance when re-imported. A stale top-level `import axios from "axios"`
-// would refer to a DIFFERENT module record than the one BaseService sees —
-// the spy would attach to the stale instance and never see the calls. Both
-// describe blocks below import axios dynamically AFTER resetModules so the
-// spy and BaseService share the same instance.
+/**
+ * IMPORTANT: do NOT statically import axios at the top of this file. With
+ * `vi.resetModules()` in beforeEach, BaseService gets a fresh axios module
+ * instance when re-imported. A stale top-level `import axios from "axios"`
+ * would refer to a DIFFERENT module record than the one BaseService sees —
+ * the spy would attach to the stale instance and never see the calls. Both
+ * describe blocks below import axios dynamically AFTER resetModules so the
+ * spy and BaseService share the same instance.
+ */
 
 // Direct-path tests use the env already pruned by tests/integration/setup.ts —
 // IQ_GATEWAY_URL/KEY are deleted there, so fetchWithToolConfig routes to
@@ -65,8 +67,10 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 	});
 
 	afterEach(() => {
-		// Restore axios spies so call history / mock state cannot leak between
-		// tests (the toHaveBeenCalledTimes(1) assertions are brittle otherwise).
+		/**
+		 * Restore axios spies so call history / mock state cannot leak between
+		 * tests (the toHaveBeenCalledTimes(1) assertions are brittle otherwise).
+		 */
 		vi.restoreAllMocks();
 	});
 
@@ -125,11 +129,13 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 	});
 });
 
-// Gateway-path tests: set IQ_GATEWAY_URL + IQ_GATEWAY_KEY before re-importing
-// BaseService so env.ts re-parses and base.service.ts routes through
-// fetchViaGateway / postViaGateway. The signal+timeout contract applies on
-// both paths — a missed spread in the gateway functions would otherwise pass
-// the direct-path tests above.
+/**
+ * Gateway-path tests: set IQ_GATEWAY_URL + IQ_GATEWAY_KEY before re-importing
+ * BaseService so env.ts re-parses and base.service.ts routes through
+ * fetchViaGateway / postViaGateway. The signal+timeout contract applies on
+ * both paths — a missed spread in the gateway functions would otherwise pass
+ * the direct-path tests above.
+ */
 describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
 	let svc: {
 		fetchDefaultTTL: (...a: unknown[]) => Promise<unknown>;
@@ -142,8 +148,10 @@ describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
 		process.env.IQ_GATEWAY_URL = "https://gateway.test/proxy";
 		process.env.IQ_GATEWAY_KEY = "gw-test-key";
 		vi.resetModules();
-		// Dynamic-import axios AFTER resetModules so we get the same module
-		// instance BaseService sees. See top-of-file comment.
+		/**
+		 * Dynamic-import axios AFTER resetModules so we get the same module
+		 * instance BaseService sees. See top-of-file comment.
+		 */
 		const axiosMod = await import("axios");
 		const axios =
 			(axiosMod as { default?: typeof import("axios").default }).default ??
