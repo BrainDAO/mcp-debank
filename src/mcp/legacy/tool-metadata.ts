@@ -46,12 +46,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "chainService.getChain",
 		sandboxMethodPath: "chainService.getChainRaw",
 		description:
-			"Retrieve detailed information about a specific blockchain chain supported by DeBank. Returns chain details including ID, name, logo URL, native token ID, wrapped token ID, and whether it supports pre-execution of transactions. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve detailed information about a specific blockchain chain supported by DeBank. Returns chain details including ID, name, logo URL, native token ID, wrapped token ID, and whether it supports pre-execution of transactions.",
 		parameters: z.object({
 			id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall: "await debank.chain.getChain({id: 'eth'})",
@@ -63,13 +63,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "protocolService.getAllProtocolsOfSupportedChains",
 		sandboxMethodPath: "protocolService.getAllProtocolsOfSupportedChainsRaw",
 		description:
-			"Retrieve a list of all DeFi protocols across specified or all supported blockchain chains. Returns essential information about each protocol including ID, chain ID, name, logo URL, site URL, portfolio support status, and TVL. Returns top 20 protocols by default. Filter by specific chains using chain_ids parameter. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Retrieve a list of all DeFi protocols across specified or all supported blockchain chains. Returns essential information about each protocol including ID, chain ID, name, logo URL, site URL, portfolio support status, and TVL. Returns top 20 protocols by default. Filter by specific chains using chain_ids parameter.",
 		parameters: z.object({
 			chain_ids: z
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC'→'eth,bsc', 'Polygon'→'matic'). If omitted, returns protocols across all supported chains. Existing chain IDs like 'eth,bsc,matic' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, returns protocols across all supported chains.",
 				),
 		}),
 		exampleCall:
@@ -133,7 +133,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "protocolService.getPoolInformation",
 		sandboxMethodPath: "protocolService.getPoolInformationRaw",
 		description:
-			"Retrieve detailed information about a specific liquidity pool. Returns pool details including ID, chain, protocol ID, contract IDs, name, USD value of deposited assets, total user count, and count of valuable users (>$100 USD value). Essential for analyzing specific pools for investment or research. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve detailed information about a specific liquidity pool. Returns pool details including ID, chain, protocol ID, contract IDs, name, USD value of deposited assets, total user count, and count of valuable users (>$100 USD value). Essential for analyzing specific pools for investment or research.",
 		parameters: z.object({
 			id: z
 				.string()
@@ -143,7 +143,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall:
@@ -156,17 +156,17 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "tokenService.getTokenInformation",
 		sandboxMethodPath: "tokenService.getTokenInformationRaw",
 		description:
-			"Fetch comprehensive details about a specific token on a blockchain. Returns token information including contract address, chain, name, symbol, decimals, logo URL, associated protocol ID, USD price, verification status, and deployment timestamp. Essential for token analysis and display. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.",
+			"Fetch comprehensive details about a specific token on a blockchain. Returns token information including contract address, chain, name, symbol, decimals, logo URL, associated protocol ID, USD price, verification status, and deployment timestamp. Essential for token analysis and display.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			id: z
 				.string()
 				.describe(
-					"Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped ETH', 'native token', '0xdac17f958d2ee523a2206206994597c13d831ec7' (USDT).",
+					"Token contract address or native token ID (e.g., '0xdac17f958d2ee523a2206206994597c13d831ec7' for USDT). Use debank.resolveWrappedToken() in execute() to resolve wrapped token keywords to addresses before passing here.",
 				),
 		}),
 		exampleCall:
@@ -178,12 +178,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "tokenService.getListTokenInformation",
 		sandboxMethodPath: "tokenService.getListTokenInformationRaw",
 		description:
-			"Retrieve detailed information for multiple tokens at once on a specific chain. Returns an array of token objects with comprehensive details. Useful for bulk token data retrieval, with support for up to 100 token addresses per request. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve detailed information for multiple tokens at once on a specific chain. Returns an array of token objects with comprehensive details. Useful for bulk token data retrieval, with support for up to 100 token addresses per request.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			ids: z
 				.string()
@@ -200,17 +200,17 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "tokenService.getTopHoldersOfToken",
 		sandboxMethodPath: "tokenService.getTopHoldersOfTokenRaw",
 		description:
-			"Fetch the top holders of a specified token, showing the largest token holders ranked by their holdings. Supports both contract addresses and native token IDs. Useful for analyzing token distribution and ownership concentration. Supports pagination for detailed analysis. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.",
+			"Fetch the top holders of a specified token, showing the largest token holders ranked by their holdings. Supports both contract addresses and native token IDs. Useful for analyzing token distribution and ownership concentration. Supports pagination for detailed analysis.",
 		parameters: z.object({
 			id: z
 				.string()
 				.describe(
-					"Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped BNB', '0xdac17f958d2ee523a2206206994597c13d831ec7'.",
+					"Token contract address or native token ID (e.g., '0xdac17f958d2ee523a2206206994597c13d831ec7'). Use debank.resolveWrappedToken() in execute() to resolve wrapped token keywords to addresses before passing here.",
 				),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			start: z
 				.number()
@@ -236,17 +236,17 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "tokenService.getTokenHistoryPrice",
 		sandboxMethodPath: "tokenService.getTokenHistoryPriceRaw",
 		description:
-			"Retrieve the historical price of a specified token for a given date. Essential for financial analysis, historical comparison, and tracking price movements over time. Returns price data for the UTC time zone on the specified date. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.",
+			"Retrieve the historical price of a specified token for a given date. Essential for financial analysis, historical comparison, and tracking price movements over time. Returns price data for the UTC time zone on the specified date.",
 		parameters: z.object({
 			id: z
 				.string()
 				.describe(
-					"Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped MATIC', '0xdac17f958d2ee523a2206206994597c13d831ec7'.",
+					"Token contract address or native token ID (e.g., '0xdac17f958d2ee523a2206206994597c13d831ec7'). Use debank.resolveWrappedToken() in execute() to resolve wrapped token keywords to addresses before passing here.",
 				),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			date_at: z
 				.string()
@@ -276,12 +276,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserChainBalance",
 		sandboxMethodPath: "userService.getUserChainBalanceRaw",
 		description:
-			"Fetch the current balance of a user's account on a specified blockchain chain. Returns the balance in USD value, providing a snapshot of the user's holdings on that chain. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Fetch the current balance of a user's account on a specified blockchain chain. Returns the balance in USD value, providing a snapshot of the user's holdings on that chain.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			id: z.string().describe("The user's wallet address."),
 		}),
@@ -312,12 +312,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserComplexProtocolList",
 		sandboxMethodPath: "userService.getUserComplexProtocolListRaw",
 		description:
-			"Retrieve detailed portfolios of a user on a specific chain across multiple protocols. Returns comprehensive information about the user's engagements including protocol details and portfolio items with assets, debts, and positions. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve detailed portfolios of a user on a specific chain across multiple protocols. Returns comprehensive information about the user's engagements including protocol details and portfolio items with assets, debts, and positions.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			id: z.string().describe("The user's wallet address."),
 		}),
@@ -330,14 +330,14 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserAllComplexProtocolList",
 		sandboxMethodPath: "userService.getUserAllComplexProtocolListRaw",
 		description:
-			"Retrieve a user's detailed portfolios across all supported chains within multiple protocols. Provides a comprehensive overview of investments and positions across the entire DeFi ecosystem. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Retrieve a user's detailed portfolios across all supported chains within multiple protocols. Provides a comprehensive overview of investments and positions across the entire DeFi ecosystem. Can be filtered by specific chains.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_ids: z
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC'→'eth,bsc', 'Polygon'→'matic'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,matic' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, includes all supported chains.",
 				),
 		}),
 		exampleCall:
@@ -349,14 +349,14 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserAllSimpleProtocolList",
 		sandboxMethodPath: "userService.getUserAllSimpleProtocolListRaw",
 		description:
-			"Fetch a user's balances in protocols across all supported chains. Returns simplified protocol information including TVL and basic details. Useful for getting a quick overview of a user's protocol engagements. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Fetch a user's balances in protocols across all supported chains. Returns simplified protocol information including TVL and basic details. Useful for getting a quick overview of a user's protocol engagements.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_ids: z
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, includes all supported chains.",
 				),
 		}),
 		exampleCall:
@@ -368,18 +368,18 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserTokenBalance",
 		sandboxMethodPath: "userService.getUserTokenBalanceRaw",
 		description:
-			"Retrieve a user's balance for a specific token. Returns detailed token information including name, symbol, decimals, USD price, and the user's balance amount. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.",
+			"Retrieve a user's balance for a specific token. Returns detailed token information including name, symbol, decimals, USD price, and the user's balance amount.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			id: z.string().describe("The user's wallet address."),
 			token_id: z
 				.string()
 				.describe(
-					"Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped token', '0xdac17f958d2ee523a2206206994597c13d831ec7'.",
+					"Token contract address or native token ID (e.g., '0xdac17f958d2ee523a2206206994597c13d831ec7'). Use debank.resolveWrappedToken() in execute() to resolve wrapped token keywords to addresses before passing here.",
 				),
 		}),
 		exampleCall:
@@ -391,13 +391,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserTokenList",
 		sandboxMethodPath: "userService.getUserTokenListRaw",
 		description:
-			"Retrieve a list of tokens held by a user on a specific chain. Returns token details including symbol, decimals, USD price, and balance amounts. Can filter for core/verified tokens or include all tokens. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve a list of tokens held by a user on a specific chain. Returns token details including symbol, decimals, USD price, and balance amounts. Can filter for core/verified tokens or include all tokens.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			is_all: z
 				.boolean()
@@ -433,13 +433,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserNftList",
 		sandboxMethodPath: "userService.getUserNftListRaw",
 		description:
-			"Fetch a list of NFTs owned by a user on a specific chain. Returns NFT details including contract ID, name, description, content type, and attributes. Can filter for verified collections only. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Fetch a list of NFTs owned by a user on a specific chain. Returns NFT details including contract ID, name, description, content type, and attributes. Can filter for verified collections only.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			is_all: z
 				.boolean()
@@ -457,7 +457,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserAllNftList",
 		sandboxMethodPath: "userService.getUserAllNftListRaw",
 		description:
-			"Retrieve a user's NFT holdings across all supported chains. Provides an aggregate list of NFTs held by the user with details including contract ID, name, and content type. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Retrieve a user's NFT holdings across all supported chains. Provides an aggregate list of NFTs held by the user with details including contract ID, name, and content type. Can be filtered by specific chains.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			is_all: z
@@ -468,7 +468,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, includes all supported chains.",
 				),
 		}),
 		exampleCall: "await debank.user.getUserAllNftList({id: '0x...'})",
@@ -479,19 +479,19 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserHistoryList",
 		sandboxMethodPath: "userService.getUserHistoryListRaw",
 		description:
-			"Fetch a user's transaction history on a specified chain. Returns a list of past transactions with details including transaction type, tokens involved, values, and timestamps. Supports filtering by token and pagination. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.",
+			"Fetch a user's transaction history on a specified chain. Returns a list of past transactions with details including transaction type, tokens involved, values, and timestamps. Supports filtering by token and pagination.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 			token_id: z
 				.string()
 				.optional()
 				.describe(
-					"Optional token contract address, native token ID, or wrapped token keyword to filter history. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token.",
+					"Optional token contract address or native token ID to filter history. Use debank.resolveWrappedToken() in execute() to resolve wrapped token keywords to addresses before passing here.",
 				),
 			start_time: z
 				.number()
@@ -517,7 +517,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserAllHistoryList",
 		sandboxMethodPath: "userService.getUserAllHistoryListRaw",
 		description:
-			"Retrieve a user's transaction history across all supported chains. Provides a comprehensive overview of DeFi activities across the entire blockchain ecosystem. Supports pagination and chain filtering. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Retrieve a user's transaction history across all supported chains. Provides a comprehensive overview of DeFi activities across the entire blockchain ecosystem. Supports pagination and chain filtering.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			start_time: z
@@ -538,7 +538,7 @@ export const TOOL_METADATA: ToolMetadata[] = [
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, includes all supported chains.",
 				),
 		}),
 		exampleCall: "await debank.user.getUserAllHistoryList({id: '0x...'})",
@@ -549,13 +549,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserTokenAuthorizedList",
 		sandboxMethodPath: "userService.getUserTokenAuthorizedListRaw",
 		description:
-			"Fetch a list of tokens for which a user has granted spending approvals on a specified chain. Returns details about each approval including amount, spender address, and associated protocol information. Useful for security audits. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Fetch a list of tokens for which a user has granted spending approvals on a specified chain. Returns details about each approval including amount, spender address, and associated protocol information. Useful for security audits.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall:
@@ -567,13 +567,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserNftAuthorizedList",
 		sandboxMethodPath: "userService.getUserNftAuthorizedListRaw",
 		description:
-			"Retrieve a list of NFTs for which a user has given spending permissions on a specified chain. Returns details including contract IDs, names, symbols, spender addresses, and approved amounts for ERC1155 tokens. Important for security reviews. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve a list of NFTs for which a user has given spending permissions on a specified chain. Returns details including contract IDs, names, symbols, spender addresses, and approved amounts for ERC1155 tokens. Important for security reviews.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall:
@@ -597,13 +597,13 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserChainNetCurve",
 		sandboxMethodPath: "userService.getUserChainNetCurveRaw",
 		description:
-			"Retrieve a user's 24-hour net asset value curve on a single chain. Shows the changes in total USD value of assets over the last 24 hours, providing insights into portfolio fluctuations on that specific chain. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Retrieve a user's 24-hour net asset value curve on a single chain. Shows the changes in total USD value of assets over the last 24 hours, providing insights into portfolio fluctuations on that specific chain.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall:
@@ -615,14 +615,14 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "userService.getUserTotalNetCurve",
 		sandboxMethodPath: "userService.getUserTotalNetCurveRaw",
 		description:
-			"Retrieve a user's 24-hour net asset value curve across all chains. Provides a comprehensive view of total USD value changes over the last 24 hours, helping track overall portfolio performance. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').",
+			"Retrieve a user's 24-hour net asset value curve across all chains. Provides a comprehensive view of total USD value changes over the last 24 hours, helping track overall portfolio performance. Can be filtered by specific chains.",
 		parameters: z.object({
 			id: z.string().describe("The user's wallet address."),
 			chain_ids: z
 				.string()
 				.optional()
 				.describe(
-					"Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work.",
+					"Comma-separated chain IDs (e.g. 'eth,bsc,matic'). If omitted, includes all supported chains.",
 				),
 		}),
 		exampleCall: "await debank.user.getUserTotalNetCurve({id: '0x...'})",
@@ -634,12 +634,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		legacyMethodPath: "chainService.getGasPrices",
 		sandboxMethodPath: "chainService.getGasPricesRaw",
 		description:
-			"Fetch current gas prices for different transaction speed levels on a specified chain. Returns prices for slow, normal, and fast transaction speeds with estimated confirmation times. Crucial for transaction cost estimation. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').",
+			"Fetch current gas prices for different transaction speed levels on a specified chain. Returns prices for slow, normal, and fast transaction speeds with estimated confirmation times. Crucial for transaction cost estimation.",
 		parameters: z.object({
 			chain_id: z
 				.string()
 				.describe(
-					"Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work.",
+					"Chain ID (e.g. 'eth', 'bsc', 'matic', 'arb', 'op', 'base', 'avax').",
 				),
 		}),
 		exampleCall: "await debank.chain.getGasPrices({chain_id: 'eth'})",
