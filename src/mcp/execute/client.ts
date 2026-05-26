@@ -1,10 +1,7 @@
 // src/mcp/execute/client.ts
 //
-// Installs the agent-facing `debank.*` API on an isolated-vm Context. Each
-// method is backed by an ivm.Reference — the guest sees a plain async
-// function built by evalClosure. Host body dispatches to the service
-// singleton's *Raw() method with an end-to-end AbortController + axios
-// timeout. Results cross the isolate boundary as ExternalCopy envelopes.
+// Two bridges: installServiceCall (dual-timeout, JSON args) for *Raw() methods;
+// installResolver (spread args, optional sync) for in-memory helpers.
 
 import dedent from "dedent";
 import type * as IVM from "isolated-vm";
@@ -35,6 +32,20 @@ const AXIOS_MS = 6_000;
 
 type Envelope = { ok: true; data: unknown } | { ok: false; error: string };
 
+/** Wraps a success value into an ExternalCopy envelope crossing the isolate boundary. */
+function envelopeOk(ivm: typeof IVM, data: unknown): unknown {
+	return new ivm.ExternalCopy({ ok: true, data } satisfies Envelope).copyInto({
+		release: true,
+	});
+}
+
+/** Wraps an error string into an ExternalCopy envelope crossing the isolate boundary. */
+function envelopeFail(ivm: typeof IVM, error: string): unknown {
+	return new ivm.ExternalCopy({ ok: false, error } satisfies Envelope).copyInto(
+		{ release: true },
+	);
+}
+
 function resolveRaw(
 	methodPath: string,
 ): (
@@ -55,87 +66,6 @@ function resolveRaw(
 	return (args, options) => fn.call(singleton, args, options);
 }
 
-/**
- * Builds a host-side Reference whose async body:
- *   1. Deserialises JSON args from the guest string,
- *   2. Races a *Raw() call against an AbortController timer,
- *   3. Returns an ExternalCopy({ ok, data | error }) envelope — never throws,
- *      so errors route back to the guest as catchable exceptions.
- */
-function makeHostRef(
-	ivm: typeof IVM,
-	rawFn: (
-		args: unknown,
-		options: { signal: AbortSignal; timeout: number },
-	) => Promise<unknown>,
-	agentFacingName: string,
-): IVM.Reference {
-	return new ivm.Reference(async (argsJson: string) => {
-		const controller = new AbortController();
-		let timer: NodeJS.Timeout | undefined;
-		const abortPromise = new Promise<never>((_, reject) => {
-			timer = setTimeout(() => {
-				controller.abort();
-				reject(new Error(`DeBank call timed out after 5s: ${agentFacingName}`));
-			}, ABORT_MS);
-			timer.unref?.();
-		});
-		try {
-			const args: unknown = argsJson === undefined ? {} : JSON.parse(argsJson);
-			const result = await Promise.race([
-				rawFn(args, { signal: controller.signal, timeout: AXIOS_MS }),
-				abortPromise,
-			]);
-			const envelope: Envelope = { ok: true, data: result };
-			return new ivm.ExternalCopy(envelope).copyInto({ release: true });
-		} catch (err) {
-			const e = err as Error & { code?: string };
-			let message: string;
-			if (
-				typeof e.message === "string" &&
-				e.message.startsWith("DeBank call timed out after 5s")
-			) {
-				message = e.message;
-			} else {
-				const isAbort = controller.signal.aborted;
-				const isAxiosTimeout =
-					e.code === "ECONNABORTED" || e.code === "ETIMEDOUT";
-				if (isAbort || isAxiosTimeout) {
-					message = `DeBank call timed out after 5s: ${agentFacingName}`;
-				} else {
-					message = e.message || String(err);
-				}
-			}
-			const envelope: Envelope = { ok: false, error: message };
-			return new ivm.ExternalCopy(envelope).copyInto({ release: true });
-		} finally {
-			if (timer) clearTimeout(timer);
-		}
-	});
-}
-
-/**
- * Wraps a sync or async host fn in a Reference that returns an envelope.
- * For async resolvers (resolveChain, resolveChains) pass async:true.
- * For sync resolvers (resolveWrappedToken) pass async:false.
- */
-function makeResolverRef(
-	ivm: typeof IVM,
-	fn: (...args: unknown[]) => unknown,
-): IVM.Reference {
-	return new ivm.Reference(async (...args: unknown[]) => {
-		try {
-			const result = await fn(...args);
-			const envelope: Envelope = { ok: true, data: result };
-			return new ivm.ExternalCopy(envelope).copyInto({ release: true });
-		} catch (err) {
-			const e = err as Error;
-			const envelope: Envelope = { ok: false, error: e.message || String(err) };
-			return new ivm.ExternalCopy(envelope).copyInto({ release: true });
-		}
-	});
-}
-
 function parseQualified(qualified: string): [string, string] {
 	const parts = qualified.split(".");
 	if (parts.length !== 3 || parts[0] !== "debank")
@@ -147,10 +77,11 @@ function parseQualified(qualified: string): [string, string] {
 }
 
 /**
- * Guest-side wrapper template: receives a Reference $0 and installs an async
- * function that JSON-serialises args, calls the host, and unpacks the envelope.
+ * Guest-side wrapper template for service calls: receives a Reference $0 and
+ * installs an async function that JSON-serialises args, calls the host, and
+ * unpacks the envelope.
  */
-const ASYNC_WRAPPER = dedent`
+const SERVICE_CALL_WRAPPER = dedent`
 	(function(ref, group, method) {
 		globalThis.debank[group][method] = async function(args) {
 			var env = await ref.apply(undefined, [JSON.stringify(args ?? {})], { result: { promise: true } });
@@ -160,7 +91,11 @@ const ASYNC_WRAPPER = dedent`
 	})($0, $1, $2)
 `;
 
-const RESOLVER_WRAPPER = dedent`
+/**
+ * Guest-side wrapper template for async resolvers: spreads positional args and
+ * awaits the host reference result.
+ */
+const ASYNC_RESOLVER_WRAPPER = dedent`
 	(function(ref, prop) {
 		globalThis.debank[prop] = async function() {
 			var a = Array.prototype.slice.call(arguments);
@@ -188,11 +123,108 @@ const SYNC_RESOLVER_WRAPPER = dedent`
 	})($0, $1)
 `;
 
+/**
+ * Installs a single service method on the guest context. The host-side body:
+ *   1. Deserialises JSON args from the guest string,
+ *   2. Races a *Raw() call against an AbortController timer,
+ *   3. Returns an ExternalCopy({ ok, data | error }) envelope — never throws,
+ *      so errors route back to the guest as catchable exceptions.
+ */
+async function installServiceCall(
+	ctx: IVM.Context,
+	ivm: typeof IVM,
+	spec: {
+		qualified: string;
+		rawFn: (
+			args: unknown,
+			options: { signal: AbortSignal; timeout: number },
+		) => Promise<unknown>;
+	},
+): Promise<void> {
+	const [group, method] = parseQualified(spec.qualified);
+	const ref = new ivm.Reference(async (argsJson: string) => {
+		const controller = new AbortController();
+		let timer: NodeJS.Timeout | undefined;
+		const abortPromise = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				controller.abort();
+				reject(new Error(`DeBank call timed out after 5s: ${spec.qualified}`));
+			}, ABORT_MS);
+			timer.unref?.();
+		});
+		try {
+			const args: unknown = argsJson === undefined ? {} : JSON.parse(argsJson);
+			const result = await Promise.race([
+				spec.rawFn(args, { signal: controller.signal, timeout: AXIOS_MS }),
+				abortPromise,
+			]);
+			return envelopeOk(ivm, result);
+		} catch (err) {
+			const e = err as Error & { code?: string };
+			let message: string;
+			if (
+				typeof e.message === "string" &&
+				e.message.startsWith("DeBank call timed out after 5s")
+			) {
+				message = e.message;
+			} else {
+				const isAbort = controller.signal.aborted;
+				const isAxiosTimeout =
+					e.code === "ECONNABORTED" || e.code === "ETIMEDOUT";
+				if (isAbort || isAxiosTimeout) {
+					message = `DeBank call timed out after 5s: ${spec.qualified}`;
+				} else {
+					message = e.message || String(err);
+				}
+			}
+			return envelopeFail(ivm, message);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	});
+	await ctx.evalClosure(SERVICE_CALL_WRAPPER, [ref, group, method]);
+}
+
+/**
+ * Installs a resolver function on the guest context. Async resolvers (default)
+ * use ASYNC_RESOLVER_WRAPPER with ref.apply; the sync variant (sync: true)
+ * uses SYNC_RESOLVER_WRAPPER with ref.applySync. The host-side Reference body
+ * is sync when sync=true (so applySync works) and async otherwise.
+ */
+async function installResolver(
+	ctx: IVM.Context,
+	ivm: typeof IVM,
+	spec: { name: string; fn: (...args: unknown[]) => unknown; sync?: boolean },
+): Promise<void> {
+	const { name, fn, sync = false } = spec;
+	const ref = sync
+		? new ivm.Reference((...args: unknown[]) => {
+				try {
+					return envelopeOk(ivm, (fn as (...a: unknown[]) => unknown)(...args));
+				} catch (err) {
+					return envelopeFail(ivm, (err as Error).message || String(err));
+				}
+			})
+		: new ivm.Reference(async (...args: unknown[]) => {
+				try {
+					return envelopeOk(
+						ivm,
+						await (fn as (...a: unknown[]) => unknown)(...args),
+					);
+				} catch (err) {
+					return envelopeFail(ivm, (err as Error).message || String(err));
+				}
+			});
+	const wrapper = sync ? SYNC_RESOLVER_WRAPPER : ASYNC_RESOLVER_WRAPPER;
+	await ctx.evalClosure(wrapper, [ref, name]);
+}
+
 export async function installDebankClient(ctx: IVM.Context): Promise<void> {
 	const mod = await import("isolated-vm");
 	const ivm = ((mod as unknown as { default?: typeof IVM }).default ??
 		mod) as typeof IVM;
 
+	// Ensure namespace objects exist
 	const groups = new Set(
 		TOOL_METADATA.map((m) => parseQualified(m.qualified)[0]),
 	);
@@ -203,37 +235,27 @@ export async function installDebankClient(ctx: IVM.Context): Promise<void> {
 		);
 	}
 
+	// 31 service calls
 	for (const m of TOOL_METADATA) {
-		const [group, method] = parseQualified(m.qualified);
-		const raw = resolveRaw(m.sandboxMethodPath);
-		const ref = makeHostRef(ivm, raw, m.qualified);
-		await ctx.evalClosure(ASYNC_WRAPPER, [ref, group, method]);
+		await installServiceCall(ctx, ivm, {
+			qualified: m.qualified,
+			rawFn: resolveRaw(m.sandboxMethodPath),
+		});
 	}
 
-	await ctx.evalClosure(RESOLVER_WRAPPER, [
-		makeResolverRef(ivm, async (name: unknown) => resolveChain(name as string)),
-		"resolveChain",
-	]);
-
-	await ctx.evalClosure(RESOLVER_WRAPPER, [
-		makeResolverRef(ivm, async (cs: unknown) => resolveChains(cs as string)),
-		"resolveChains",
-	]);
-
-	await ctx.evalClosure(SYNC_RESOLVER_WRAPPER, [
-		new ivm.Reference((kw: unknown, chainId: unknown) => {
-			try {
-				const result = resolveWrappedToken(kw as string, chainId as string);
-				return new ivm.ExternalCopy({ ok: true, data: result }).copyInto({
-					release: true,
-				});
-			} catch (err) {
-				return new ivm.ExternalCopy({
-					ok: false,
-					error: (err as Error).message || String(err),
-				}).copyInto({ release: true });
-			}
-		}),
-		"resolveWrappedToken",
-	]);
+	// 3 resolvers (2 async + 1 sync)
+	await installResolver(ctx, ivm, {
+		name: "resolveChain",
+		fn: (n: unknown) => resolveChain(n as string),
+	});
+	await installResolver(ctx, ivm, {
+		name: "resolveChains",
+		fn: (cs: unknown) => resolveChains(cs as string),
+	});
+	await installResolver(ctx, ivm, {
+		name: "resolveWrappedToken",
+		fn: (kw: unknown, c: unknown) =>
+			resolveWrappedToken(kw as string, c as string),
+		sync: true,
+	});
 }
