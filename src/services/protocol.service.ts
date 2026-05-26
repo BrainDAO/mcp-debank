@@ -1,6 +1,5 @@
 import { config } from "../config.js";
 import { createChildLogger } from "../lib/utils/index.js";
-import { toMarkdown } from "../lib/utils/markdown-formatter.js";
 import type { PoolInfo, ProtocolHolder, ProtocolInfo } from "../types.js";
 import { BaseService, type RequestOptions } from "./base.service.js";
 
@@ -33,21 +32,6 @@ export class ProtocolService extends BaseService {
 		}
 	}
 
-	async getProtocolInformation(args: { id: string }): Promise<string> {
-		const data = await this.getProtocolInformationRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Protocol Information: ${data.name || args.id}`,
-				currencyFields: ["tvl"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format protocol ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getAllProtocolsOfSupportedChainsRaw(
 		args: { chain_ids?: string },
 		options?: RequestOptions,
@@ -66,25 +50,6 @@ export class ProtocolService extends BaseService {
 			const context = args.chain_ids
 				? `Failed to fetch protocols for chains ${args.chain_ids}`
 				: "Failed to fetch protocols list";
-			throw logAndWrapError(context, error);
-		}
-	}
-
-	async getAllProtocolsOfSupportedChains(args: {
-		chain_ids?: string;
-	}): Promise<string> {
-		const data = await this.getAllProtocolsOfSupportedChainsRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: args.chain_ids
-					? `Protocols on Chains: ${args.chain_ids}`
-					: "All Supported Protocols",
-				currencyFields: ["tvl"],
-			});
-		} catch (error) {
-			const context = args.chain_ids
-				? `Failed to format protocols for chains ${args.chain_ids} response`
-				: "Failed to format protocols list response";
 			throw logAndWrapError(context, error);
 		}
 	}
@@ -117,25 +82,6 @@ export class ProtocolService extends BaseService {
 		}
 	}
 
-	async getTopHoldersOfProtocol(args: {
-		id: string;
-		start?: number;
-		limit?: number;
-	}): Promise<string> {
-		const data = await this.getTopHoldersOfProtocolRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Top Holders of Protocol: ${args.id}`,
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format top holders for protocol ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getPoolInformationRaw(
 		args: {
 			id: string;
@@ -152,24 +98,6 @@ export class ProtocolService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch pool ${args.id} on chain ${args.chain_id}`,
-				error,
-			);
-		}
-	}
-
-	async getPoolInformation(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
-		const data = await this.getPoolInformationRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Pool Information: ${data.name || args.id}`,
-				currencyFields: ["tvl"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format pool ${args.id} on chain ${args.chain_id} response`,
 				error,
 			);
 		}

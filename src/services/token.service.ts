@@ -4,7 +4,6 @@
  */
 
 import { createChildLogger } from "../lib/utils/index.js";
-import { toMarkdown } from "../lib/utils/markdown-formatter.js";
 import type { TokenHistoricalPrice, TokenHolder, TokenInfo } from "../types.js";
 import { BaseService, type RequestOptions } from "./base.service.js";
 
@@ -40,25 +39,6 @@ export class TokenService extends BaseService {
 		}
 	}
 
-	async getTokenInformation(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
-		const data = await this.getTokenInformationRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Token Information: ${data.name || args.id}`,
-				currencyFields: ["price"],
-				numberFields: ["decimals"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format token ${args.id} on chain ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getListTokenInformationRaw(
 		args: { chain_id: string; ids: string },
 		options?: RequestOptions,
@@ -72,25 +52,6 @@ export class TokenService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token list for chain ${args.chain_id} with ids ${args.ids}`,
-				error,
-			);
-		}
-	}
-
-	async getListTokenInformation(args: {
-		chain_id: string;
-		ids: string;
-	}): Promise<string> {
-		const data = await this.getListTokenInformationRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Token List (${data.length} tokens)`,
-				currencyFields: ["price"],
-				numberFields: ["decimals"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format token list for chain ${args.chain_id} with ids ${args.ids} response`,
 				error,
 			);
 		}
@@ -126,27 +87,6 @@ export class TokenService extends BaseService {
 		}
 	}
 
-	async getTopHoldersOfToken(args: {
-		id: string;
-		chain_id: string;
-		start?: number;
-		limit?: number;
-	}): Promise<string> {
-		const data = await this.getTopHoldersOfTokenRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Top Holders of Token: ${args.id}`,
-				currencyFields: ["usd_value"],
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format top holders for token ${args.id} on chain ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getTokenHistoryPriceRaw(
 		args: { id: string; chain_id: string; date_at: string },
 		options?: RequestOptions,
@@ -160,25 +100,6 @@ export class TokenService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch historical price for token ${args.id} on ${args.chain_id} for ${args.date_at}`,
-				error,
-			);
-		}
-	}
-
-	async getTokenHistoryPrice(args: {
-		id: string;
-		chain_id: string;
-		date_at: string;
-	}): Promise<string> {
-		const data = await this.getTokenHistoryPriceRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Historical Price for ${args.id} on ${args.date_at}`,
-				currencyFields: ["price"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format historical price for token ${args.id} on ${args.chain_id} for ${args.date_at} response`,
 				error,
 			);
 		}

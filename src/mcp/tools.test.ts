@@ -50,18 +50,22 @@ describe("debank_resolve", () => {
 });
 
 describe("debank_get_supported_chain_list (default surface)", () => {
-	it("returns chainService.getSupportedChainList markdown verbatim", async () => {
+	it("returns chainService.getSupportedChainListRaw as JSON", async () => {
 		const servicesMod = await import("../services/index.js");
+		const mockChains = [
+			{ id: "eth", name: "Ethereum" },
+			{ id: "bsc", name: "BSC" },
+		];
 		const getList = vi
-			.spyOn(servicesMod.chainService, "getSupportedChainList")
-			.mockResolvedValue("# Supported Chains\n\n* eth\n* bsc");
+			.spyOn(servicesMod.chainService, "getSupportedChainListRaw")
+			.mockResolvedValue(mockChains as never);
 
 		const { supportedChainListTool } = await import("./tools.js");
 		const res = await supportedChainListTool.execute({});
 
 		expect(getList).toHaveBeenCalledTimes(1);
 		expect(res.isError).toBe(false);
-		expect(res.content[0]?.text).toBe("# Supported Chains\n\n* eth\n* bsc");
+		expect(JSON.parse(res.content[0]?.text ?? "")).toEqual(mockChains);
 	});
 
 	it("description matches v0.1 verbatim and parameters schema is empty", async () => {

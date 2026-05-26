@@ -10,7 +10,6 @@ describe("tool-metadata in-process checks", () => {
 		for (const m of TOOL_METADATA) {
 			expect(m.name).toMatch(/^debank_/);
 			expect(m.qualified).toMatch(/^debank\./);
-			expect(typeof m.legacyImpl).toBe("function");
 			expect(typeof m.sandboxImpl).toBe("function");
 			expect(m.description.length).toBeGreaterThan(20);
 			expect(m.exampleCall.length).toBeGreaterThan(10);

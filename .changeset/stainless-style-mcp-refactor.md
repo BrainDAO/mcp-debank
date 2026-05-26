@@ -1,11 +1,15 @@
 ---
-"@iqai/mcp-debank": minor
+"@iqai/mcp-debank": major
 ---
 
-**Breaking change:** 30 of the 31 legacy `debank_*` tools are now hidden by default; `debank_get_supported_chain_list` remains visible as a default grounding tool. Pass `--legacy-tools` or set `DEBANK_MCP_LEGACY=1` to restore the hidden 30.
+**Breaking change:** The 30 legacy `debank_*` tools (formerly behind `--legacy-tools`) are removed. Use `list_endpoints` + `get_endpoint_schema` + `invoke_endpoint` for per-endpoint access (host-side jq filtering supported), or `execute` for multi-step workflows.
 
-New tools: `execute` (sandboxed JavaScript against a DeBank client), `search_docs` (local MiniSearch index over methods + cookbook), and `debank_resolve`.
+New tools: `execute` (sandboxed JavaScript against a DeBank client), `search_docs` (local MiniSearch index over methods + cookbook), `debank_resolve`, `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint`.
 
-Internals: each service method now exposes a public `*Raw()` JSON-returning variant; the markdown method is a thin wrapper that catches formatter failures separately.
+Internals: each service exposes only `*Raw()` JSON-returning methods. `invoke_endpoint` dispatches by qualified name via the `sandboxImpl` field on each tool metadata entry. The markdown wrapper layer (`toMarkdown`) is fully removed.
 
-**Breaking change for `--legacy-tools` users:** the v0.1 host-side LLM response filter has been removed. The `_userQuery` parameter on legacy tools is no longer accepted and no longer compresses large responses. Agents needing projection on large responses should use the `execute` tool to project in JavaScript instead. The `OPENROUTER_API_KEY`, `LLM_MODEL`, and `GOOGLE_GENERATIVE_AI_API_KEY` environment variables are no longer recognized.
+**Breaking changes:**
+- The 30 `debank_*` tools (chain, protocol, token, user, transaction) are no longer available. Use `invoke_endpoint` with the qualified name from `list_endpoints`.
+- The `--legacy-tools` flag and `DEBANK_MCP_LEGACY` env var are removed and no longer recognized.
+- `debank_get_supported_chain_list` now returns JSON, not markdown.
+- The `OPENROUTER_API_KEY`, `LLM_MODEL`, and `GOOGLE_GENERATIVE_AI_API_KEY` environment variables are no longer recognized.

@@ -46,8 +46,8 @@ When agents need to compress a large response, the answer is `execute` — agent
 
 ### Lost
 
-- **`--legacy-tools` users who passed `_userQuery` on huge responses lose silent compression.** Migration path: invoke `execute` with a JS projection of the same call.
-- Strict byte-identity with v0.1 behavior on the `_userQuery` path. v0.1's markdown output for non-`_userQuery` calls is still preserved byte-identical (verified by the 31-method snapshot regression in `tests/integration/service-snapshots.test.ts`).
+- **`--legacy-tools` users who passed `_userQuery` on huge responses lose silent compression.** Migration path: use `invoke_endpoint` with a `jq_filter` for deterministic host-side projection, or `execute` with a JS projection for multi-step flows.
+- The 30 `debank_*` legacy tools are removed in Stage 2. Per-endpoint access now goes through `invoke_endpoint` (qualified name from `list_endpoints`, optional `jq_filter` — the deterministic replacement for the v0.1 LLM filter).
 
 ## When to revisit
 

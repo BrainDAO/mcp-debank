@@ -55,8 +55,11 @@ export const supportedChainListTool = {
 	parameters: CHAIN_LIST_PARAMS,
 	annotations: { readOnlyHint: true },
 	execute: async (_args: z.infer<typeof CHAIN_LIST_PARAMS>) => {
-		const md = await chainService.getSupportedChainList();
-		return { content: [{ type: "text" as const, text: md }], isError: false };
+		const data = await chainService.getSupportedChainListRaw();
+		return {
+			content: [{ type: "text" as const, text: JSON.stringify(data) }],
+			isError: false,
+		};
 	},
 };
 

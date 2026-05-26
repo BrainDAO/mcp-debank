@@ -4,7 +4,6 @@
  */
 
 import { createChildLogger } from "../lib/utils/index.js";
-import { toMarkdown } from "../lib/utils/markdown-formatter.js";
 import type {
 	NetCurvePoint,
 	NFTAuthorization,
@@ -50,20 +49,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserUsedChainList(args: { id: string }): Promise<string> {
-		const data = await this.getUserUsedChainListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Chains Used by ${args.id}`,
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format used chain list for user ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserChainBalanceRaw(
 		args: { id: string; chain_id: string },
 		options?: RequestOptions,
@@ -77,24 +62,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch chain balance for user ${args.id} on ${args.chain_id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserChainBalance(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
-		const data = await this.getUserChainBalanceRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Balance on ${args.chain_id}`,
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format chain balance for user ${args.id} on ${args.chain_id} response`,
 				error,
 			);
 		}
@@ -118,24 +85,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserProtocol(args: {
-		id: string;
-		protocol_id: string;
-	}): Promise<string> {
-		const data = await this.getUserProtocolRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Protocol Position",
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format protocol ${args.protocol_id} for user ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserComplexProtocolListRaw(
 		args: { id: string; chain_id: string },
 		options?: RequestOptions,
@@ -149,24 +98,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch complex protocol list for user ${args.id} on ${args.chain_id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserComplexProtocolList(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
-		const data = await this.getUserComplexProtocolListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Complex Protocol Positions on ${args.chain_id}`,
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format complex protocol list for user ${args.id} on ${args.chain_id} response`,
 				error,
 			);
 		}
@@ -194,24 +125,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllComplexProtocolList(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
-		const data = await this.getUserAllComplexProtocolListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "All Complex Protocol Positions",
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			const context = args.chain_ids
-				? `Failed to format all complex protocols for user ${args.id} on chains ${args.chain_ids} response`
-				: `Failed to format all complex protocols for user ${args.id} response`;
-			throw logAndWrapError(context, error);
-		}
-	}
-
 	async getUserAllSimpleProtocolListRaw(
 		args: { id: string; chain_ids?: string },
 		options?: RequestOptions,
@@ -234,24 +147,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllSimpleProtocolList(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
-		const data = await this.getUserAllSimpleProtocolListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Simple Protocol Positions",
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			const context = args.chain_ids
-				? `Failed to format all simple protocols for user ${args.id} on chains ${args.chain_ids} response`
-				: `Failed to format all simple protocols for user ${args.id} response`;
-			throw logAndWrapError(context, error);
-		}
-	}
-
 	async getUserTokenBalanceRaw(
 		args: { id: string; chain_id: string; token_id: string },
 		options?: RequestOptions,
@@ -265,26 +160,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token balance for user ${args.id}, token ${args.token_id} on ${args.chain_id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserTokenBalance(args: {
-		id: string;
-		chain_id: string;
-		token_id: string;
-	}): Promise<string> {
-		const data = await this.getUserTokenBalanceRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Token Balance: ${args.token_id}`,
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format token balance for user ${args.id}, token ${args.token_id} on ${args.chain_id} response`,
 				error,
 			);
 		}
@@ -324,27 +199,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTokenList(args: {
-		id: string;
-		chain_id: string;
-		is_all?: boolean;
-		has_balance?: boolean;
-	}): Promise<string> {
-		const data = await this.getUserTokenListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Token Holdings on ${args.chain_id}`,
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format token list for user ${args.id} on chain ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserAllTokenListRaw(
 		args: {
 			id: string;
@@ -372,26 +226,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch all token list for user ${args.id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserAllTokenList(args: {
-		id: string;
-		is_all?: boolean;
-		has_balance?: boolean;
-	}): Promise<string> {
-		const data = await this.getUserAllTokenListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "All Token Holdings",
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format all token list for user ${args.id} response`,
 				error,
 			);
 		}
@@ -427,25 +261,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserNftList(args: {
-		id: string;
-		chain_id: string;
-		is_all?: boolean;
-	}): Promise<string> {
-		const data = await this.getUserNftListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `NFT Collection on ${args.chain_id}`,
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format NFT list for user ${args.id} on chain ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserAllNftListRaw(
 		args: {
 			id: string;
@@ -471,25 +286,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch all NFT list for user ${args.id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserAllNftList(args: {
-		id: string;
-		is_all?: boolean;
-		chain_ids?: string;
-	}): Promise<string> {
-		const data = await this.getUserAllNftListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "All NFT Holdings",
-				numberFields: ["amount"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format all NFT list for user ${args.id} response`,
 				error,
 			);
 		}
@@ -533,26 +329,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserHistoryList(args: {
-		id: string;
-		chain_id: string;
-		start_time?: number;
-		end_time?: number;
-		page_count?: number;
-	}): Promise<string> {
-		const data = await this.getUserHistoryListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Transaction History on ${args.chain_id}`,
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format transaction history for user ${args.id} on ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserAllHistoryListRaw(
 		args: {
 			id: string;
@@ -589,25 +365,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllHistoryList(args: {
-		id: string;
-		start_time?: number;
-		end_time?: number;
-		page_count?: number;
-	}): Promise<string> {
-		const data = await this.getUserAllHistoryListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Complete Transaction History",
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format complete transaction history for user ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserTokenAuthorizedListRaw(
 		args: { id: string },
 		options?: RequestOptions,
@@ -621,20 +378,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token authorizations for user ${args.id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserTokenAuthorizedList(args: { id: string }): Promise<string> {
-		const data = await this.getUserTokenAuthorizedListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Token Authorizations",
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format token authorizations for user ${args.id} response`,
 				error,
 			);
 		}
@@ -658,20 +401,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserNftAuthorizedList(args: { id: string }): Promise<string> {
-		const data = await this.getUserNftAuthorizedListRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "NFT Authorizations",
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format NFT authorizations for user ${args.id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserTotalBalanceRaw(
 		args: { id: string },
 		options?: RequestOptions,
@@ -685,21 +414,6 @@ export class UserService extends BaseService {
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch total balance for user ${args.id}`,
-				error,
-			);
-		}
-	}
-
-	async getUserTotalBalance(args: { id: string }): Promise<string> {
-		const data = await this.getUserTotalBalanceRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Total Portfolio Balance",
-				currencyFields: ["total_usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format total balance for user ${args.id} response`,
 				error,
 			);
 		}
@@ -723,24 +437,6 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserChainNetCurve(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
-		const data = await this.getUserChainNetCurveRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: `Portfolio Value Over Time (${args.chain_id})`,
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format chain net curve for user ${args.id} on ${args.chain_id} response`,
-				error,
-			);
-		}
-	}
-
 	async getUserTotalNetCurveRaw(
 		args: { id: string; chain_ids?: string },
 		options?: RequestOptions,
@@ -757,24 +453,6 @@ export class UserService extends BaseService {
 				? `Failed to fetch total net curve for user ${args.id} on chains ${args.chain_ids}`
 				: `Failed to fetch total net curve for user ${args.id}`;
 			throw logAndWrapError(context, error);
-		}
-	}
-
-	async getUserTotalNetCurve(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
-		const data = await this.getUserTotalNetCurveRaw(args);
-		try {
-			return toMarkdown(data.usd_value_list, {
-				title: "Total Portfolio Value Over Time",
-				currencyFields: ["usd_value"],
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				`Failed to format total net curve for user ${args.id} response`,
-				error,
-			);
 		}
 	}
 }

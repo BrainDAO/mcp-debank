@@ -3,7 +3,7 @@
 
 export const INSTRUCTIONS = `# DeBank MCP — Code Mode Operational Guide
 
-This server exposes two primary tools to agents: \`execute\` (sandboxed JavaScript against a DeBank client) and \`search_docs\` (search SDK documentation). Two convenience tools — \`debank_resolve\` and \`debank_get_supported_chain_list\` — are also available by default. The 30 hidden legacy tools can be restored with \`--legacy-tools\`.
+This server exposes two primary tools to agents: \`execute\` (sandboxed JavaScript against a DeBank client) and \`search_docs\` (search SDK documentation). Two convenience tools — \`debank_resolve\` and \`debank_get_supported_chain_list\` — are also available by default. Three dynamic-endpoint tools — \`list_endpoints\`, \`get_endpoint_schema\`, and \`invoke_endpoint\` — enable per-endpoint access without Code Mode.
 
 ## When to use which tool
 

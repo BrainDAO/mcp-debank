@@ -5,7 +5,6 @@
 
 import { config } from "../config.js";
 import { createChildLogger } from "../lib/utils/index.js";
-import { toMarkdown } from "../lib/utils/markdown-formatter.js";
 import type { PreExecResult, TransactionExplanation } from "../types.js";
 import { BaseService, type RequestOptions } from "./base.service.js";
 
@@ -71,23 +70,6 @@ export class TransactionService extends BaseService {
 		}
 	}
 
-	async preExecTransaction(args: {
-		tx: string;
-		pending_tx_list?: string;
-	}): Promise<string> {
-		const data = await this.preExecTransactionRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Transaction Simulation Result",
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				"Failed to format transaction simulation result response",
-				error,
-			);
-		}
-	}
-
 	async explainTransactionRaw(
 		args: { tx: string },
 		options?: RequestOptions,
@@ -116,20 +98,6 @@ export class TransactionService extends BaseService {
 			);
 		} catch (error) {
 			throw logAndWrapError("Failed to explain transaction", error);
-		}
-	}
-
-	async explainTransaction(args: { tx: string }): Promise<string> {
-		const data = await this.explainTransactionRaw(args);
-		try {
-			return toMarkdown(data, {
-				title: "Transaction Explanation",
-			});
-		} catch (error) {
-			throw logAndWrapError(
-				"Failed to format transaction explanation response",
-				error,
-			);
 		}
 	}
 }

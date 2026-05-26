@@ -26,11 +26,6 @@ const { version: rawVersion } = require("../package.json") as {
 assertSemver(rawVersion);
 const version: SemverString = rawVersion;
 
-function legacyEnabled(): boolean {
-	if (process.env.DEBANK_MCP_LEGACY === "1") return true;
-	return process.argv.includes("--legacy-tools");
-}
-
 async function main() {
 	const server = new FastMCP({
 		name: "DeBank MCP Server",
@@ -46,15 +41,6 @@ async function main() {
 		...endpointTools,
 	] as unknown as ReadonlyArray<RegisteredTool>;
 	for (const tool of defaults) server.addTool(tool);
-
-	if (legacyEnabled()) {
-		const { legacyTools } = await import("./mcp/legacy/tool-handlers.js");
-		for (const tool of legacyTools) {
-			if (tool.name === "debank_get_supported_chain_list") continue;
-			server.addTool(tool as unknown as RegisteredTool);
-		}
-		logger.info("Legacy tools enabled (--legacy-tools or DEBANK_MCP_LEGACY=1)");
-	}
 
 	try {
 		await server.start({ transportType: "stdio" });
