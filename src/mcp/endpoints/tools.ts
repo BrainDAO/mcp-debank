@@ -5,7 +5,7 @@
 // the per-endpoint legacy debank_* tools (deleted in Stage 2 of this refactor).
 
 import dedent from "dedent";
-import jq from "node-jq";
+import { JQ } from "jqts";
 import { z } from "zod";
 import { TOOL_METADATA } from "../legacy/tool-metadata.js";
 
@@ -177,11 +177,10 @@ export const invokeEndpointTool = {
 			const response = await rawFn(parseResult.data);
 
 			if (args.jq_filter) {
-				const filtered = await jq.run(
-					args.jq_filter,
-					JSON.stringify(response),
-					{ input: "string", output: "json" },
+				const outputs = JQ.compile(args.jq_filter).evaluate(
+					response as JQ.JSONValue,
 				);
+				const filtered = outputs.length === 1 ? outputs[0] : outputs;
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(filtered) }],
 					isError: false,
