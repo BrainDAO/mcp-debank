@@ -6,7 +6,7 @@ import { endpointTools } from "./mcp/endpoints/tools.js";
 import { executeTool } from "./mcp/execute/tool.js";
 import { INSTRUCTIONS } from "./mcp/instructions/instructions.generated.js";
 import { searchDocsTool } from "./mcp/search-docs/tool.js";
-import { defaultConvenienceTools } from "./mcp/tools.js";
+import { dynamicConvenienceTools } from "./mcp/tools.js";
 
 const logger = createChildLogger("DeBank MCP");
 
@@ -26,6 +26,12 @@ const { version: rawVersion } = require("../package.json") as {
 assertSemver(rawVersion);
 const version: SemverString = rawVersion;
 
+function dynamicToolsEnabled(): boolean {
+	if (process.env.DEBANK_MCP_TOOLS === "dynamic") return true;
+	if (process.argv.includes("--tools=dynamic")) return true;
+	return false;
+}
+
 async function main() {
 	const server = new FastMCP({
 		name: "DeBank MCP Server",
@@ -34,13 +40,20 @@ async function main() {
 	});
 
 	type RegisteredTool = Parameters<typeof server.addTool>[0];
-	const defaults: ReadonlyArray<RegisteredTool> = [
-		executeTool,
-		searchDocsTool,
-		...defaultConvenienceTools,
-		...endpointTools,
-	] as unknown as ReadonlyArray<RegisteredTool>;
-	for (const tool of defaults) server.addTool(tool);
+	const tools: RegisteredTool[] = [
+		executeTool as unknown as RegisteredTool,
+		searchDocsTool as unknown as RegisteredTool,
+	];
+	if (dynamicToolsEnabled()) {
+		tools.push(
+			...(dynamicConvenienceTools as unknown as RegisteredTool[]),
+			...(endpointTools as unknown as RegisteredTool[]),
+		);
+		logger.info(
+			"Dynamic tools enabled (--tools=dynamic or DEBANK_MCP_TOOLS=dynamic)",
+		);
+	}
+	for (const tool of tools) server.addTool(tool);
 
 	try {
 		await server.start({ transportType: "stdio" });

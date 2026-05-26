@@ -123,6 +123,59 @@ Add the following configuration to your MCP client settings (e.g., `claude_deskt
 
 Starting in v0.2, the preferred way to query DeBank from an AI agent is the `execute` + `search_docs` pair. These two tools replace the 30 legacy endpoint-specific tools for new integrations.
 
+### Default tool surface
+
+By default the server registers exactly two tools:
+
+| Tool | Purpose |
+| :--- | :--- |
+| `execute` | Run agent-authored JavaScript in a secure `isolated-vm` sandbox against a fully-configured DeBank client. Handles multi-step workflows, loops, joins, conditional logic, and custom projection. |
+| `search_docs` | Search the embedded MiniSearch index over all DeBank API methods and cookbook entries. |
+
+### `--tools=dynamic` mode
+
+Start the server with `--tools=dynamic` (or set `DEBANK_MCP_TOOLS=dynamic`) to register four additional tools:
+
+| Tool | Purpose |
+| :--- | :--- |
+| `debank_resolve` | Resolve a human-readable chain name ("BSC", "Polygon") to a DeBank chain ID. |
+| `list_endpoints` | List all available endpoint qualified names. |
+| `get_endpoint_schema` | Inspect parameters and response shape for a specific endpoint. |
+| `invoke_endpoint` | Call a single endpoint with an optional `jq_filter` for host-side projection. |
+
+**MCP client configuration with dynamic tools:**
+
+```json
+{
+  "mcpServers": {
+    "debank": {
+      "command": "pnpm",
+      "args": ["dlx", "@iqai/mcp-debank", "--tools=dynamic"],
+      "env": {
+        "DEBANK_API_KEY": "your_debank_api_key_here"
+      }
+    }
+  }
+}
+```
+
+Or via environment variable:
+
+```json
+{
+  "mcpServers": {
+    "debank": {
+      "command": "pnpm",
+      "args": ["dlx", "@iqai/mcp-debank"],
+      "env": {
+        "DEBANK_API_KEY": "your_debank_api_key_here",
+        "DEBANK_MCP_TOOLS": "dynamic"
+      }
+    }
+  }
+}
+```
+
 ### `execute` — Sandboxed JavaScript
 
 Run arbitrary JavaScript inside a secure `isolated-vm` sandbox. The sandbox receives a fully-configured DeBank client instance as `debank`. All service namespaces (`debank.chain`, `debank.protocol`, `debank.token`, `debank.user`, `debank.transaction`) are available. Pool methods are under `debank.protocol`; NFT methods are under `debank.user`.
@@ -178,19 +231,21 @@ Search the embedded MiniSearch index over all DeBank API methods and cookbook en
 
 ### Migrating from v0.1.x / v0.2.x
 
-In v0.3, the 30 endpoint-specific `debank_*` tools are **removed**. Use the dynamic-tools triad instead:
+In v0.3, the 30 endpoint-specific `debank_*` tools are **removed**. Use `execute` for multi-step workflows, or start with `--tools=dynamic` for the per-endpoint dispatch triad:
 
 - **`list_endpoints`** — discover available endpoints and their qualified names.
 - **`get_endpoint_schema`** — inspect parameters and response shape for a specific endpoint.
 - **`invoke_endpoint`** — call a single endpoint with optional `jq_filter` for host-side projection.
 
-For multi-step workflows, use `execute` (sandboxed JavaScript) and `search_docs` (documentation search) as before.
-
 ## 🛠️ MCP Tools
 
-### Dynamic endpoint tools (v0.3+)
+### Default surface
 
-Use `list_endpoints` to discover all 31 available endpoint names, then `get_endpoint_schema` for parameter details, and `invoke_endpoint` to call them with optional `jq_filter` projection.
+`execute` + `search_docs`. These two tools handle the full workflow — discovery, projection, multi-step composition — through agent-authored JavaScript in `execute`.
+
+### Dynamic endpoint tools (`--tools=dynamic`)
+
+Start with `--tools=dynamic` or `DEBANK_MCP_TOOLS=dynamic` to also register: `debank_resolve`, `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint`.
 
 ## 👨‍💻 Development
 

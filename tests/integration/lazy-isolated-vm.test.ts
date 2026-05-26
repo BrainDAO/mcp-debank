@@ -1,4 +1,6 @@
 // tests/integration/lazy-isolated-vm.test.ts
+
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,105 +18,159 @@ const registerPath = path.resolve(
 );
 const entrypoint = path.resolve(repoRoot, "dist/index.js");
 
-describe("lazy isolated-vm", () => {
-	it("server starts without loading isolated-vm; search_docs works; execute fails", async () => {
-		const tmpCwd = mkdtempSync(path.join(tmpdir(), "debank-mcp-lazy-"));
-		const child = spawn(
-			"node",
-			[
-				"--no-node-snapshot",
-				"--import",
-				registerPath,
-				entrypoint,
-				"--legacy-tools",
-			],
-			{
-				cwd: tmpCwd,
-				env: {
-					PATH: process.env.PATH ?? "",
-					NODE_ENV: "test",
-					DEBANK_API_KEY: "test-key",
-					DEBANK_MCP_LEGACY: "1",
-					DOTENV_CONFIG_PATH: "/dev/null",
-				},
+/** Spawn the server, perform MCP handshake, return { toolNames, child, kill }. */
+async function spawnAndListTools(
+	extraEnv: Record<string, string> = {},
+): Promise<{
+	toolNames: string[];
+	child: ChildProcessWithoutNullStreams;
+	killChild: () => Promise<void>;
+	send: (msg: object) => void;
+	waitForId: (id: number, timeoutMs: number) => Promise<unknown>;
+}> {
+	const tmpCwd = mkdtempSync(path.join(tmpdir(), "debank-mcp-lazy-"));
+	const child = spawn(
+		"node",
+		["--no-node-snapshot", "--import", registerPath, entrypoint],
+		{
+			cwd: tmpCwd,
+			env: {
+				PATH: process.env.PATH ?? "",
+				NODE_ENV: "test",
+				DEBANK_API_KEY: "test-key",
+				DOTENV_CONFIG_PATH: "/dev/null",
+				...extraEnv,
 			},
-		);
+		},
+	);
 
-		let stdoutBuf = "";
-		const responses: Record<number, unknown> = {};
-		const responseWaiters: Record<number, (val: unknown) => void> = {};
-		child.stdout.on("data", (chunk: Buffer) => {
-			stdoutBuf += chunk.toString();
-			const parts = stdoutBuf.split("\n");
-			stdoutBuf = parts.pop() ?? "";
-			for (const raw of parts) {
-				const line = raw.trim();
-				if (!line) continue;
-				try {
-					const msg = JSON.parse(line) as {
-						id?: number;
-						result?: unknown;
-						error?: unknown;
-					};
-					if (typeof msg.id === "number") {
-						responses[msg.id] = msg;
-						responseWaiters[msg.id]?.(msg);
-					}
-				} catch {
-					/* not JSON — ignore */
+	let stdoutBuf = "";
+	const responses: Record<number, unknown> = {};
+	const responseWaiters: Record<number, (val: unknown) => void> = {};
+	child.stdout.on("data", (chunk: Buffer) => {
+		stdoutBuf += chunk.toString();
+		const parts = stdoutBuf.split("\n");
+		stdoutBuf = parts.pop() ?? "";
+		for (const raw of parts) {
+			const line = raw.trim();
+			if (!line) continue;
+			try {
+				const msg = JSON.parse(line) as {
+					id?: number;
+					result?: unknown;
+					error?: unknown;
+				};
+				if (typeof msg.id === "number") {
+					responses[msg.id] = msg;
+					responseWaiters[msg.id]?.(msg);
 				}
+			} catch {
+				/* not JSON — ignore */
 			}
+		}
+	});
+
+	const stderrBuf: string[] = [];
+	child.stderr.on("data", (b: Buffer) => stderrBuf.push(b.toString()));
+
+	const send = (msg: object) => child.stdin.write(`${JSON.stringify(msg)}\n`);
+	const waitForId = (id: number, timeoutMs: number) =>
+		new Promise<unknown>((resolve, reject) => {
+			if (responses[id] !== undefined) return resolve(responses[id]);
+			const timer = setTimeout(
+				() =>
+					reject(
+						new Error(
+							`Timed out waiting for response id=${id}. stderr: ${stderrBuf.join("")}`,
+						),
+					),
+				timeoutMs,
+			);
+			responseWaiters[id] = (val) => {
+				clearTimeout(timer);
+				resolve(val);
+			};
 		});
 
-		const stderrBuf: string[] = [];
-		child.stderr.on("data", (b: Buffer) => stderrBuf.push(b.toString()));
+	const killChild = async () => {
+		try {
+			child.stdin.end();
+		} catch {
+			/* already closed */
+		}
+		const exited = new Promise<void>((resolve) => {
+			if (child.exitCode !== null || child.signalCode !== null)
+				return resolve();
+			child.once("exit", () => resolve());
+			child.once("close", () => resolve());
+		});
+		if (!child.killed) child.kill();
+		const sigtermTimer: { fired: boolean } = { fired: false };
+		await Promise.race([
+			exited,
+			new Promise<void>((resolve) => {
+				const t = setTimeout(() => {
+					sigtermTimer.fired = true;
+					if (
+						!child.killed ||
+						(child.exitCode === null && child.signalCode === null)
+					) {
+						child.kill("SIGKILL");
+					}
+					resolve();
+				}, 2_000);
+				t.unref?.();
+			}),
+		]);
+		if (
+			sigtermTimer.fired &&
+			child.exitCode === null &&
+			child.signalCode === null
+		) {
+			await Promise.race([
+				exited,
+				new Promise<void>((resolve) => {
+					const t = setTimeout(resolve, 1_000);
+					t.unref?.();
+				}),
+			]);
+		}
+	};
 
-		const send = (msg: object) => child.stdin.write(`${JSON.stringify(msg)}\n`);
-		const waitForId = (id: number, timeoutMs: number) =>
-			new Promise<unknown>((resolve, reject) => {
-				if (responses[id] !== undefined) return resolve(responses[id]);
-				const timer = setTimeout(
-					() =>
-						reject(
-							new Error(
-								`Timed out waiting for response id=${id}. stderr: ${stderrBuf.join("")}`,
-							),
-						),
-					timeoutMs,
-				);
-				responseWaiters[id] = (val) => {
-					clearTimeout(timer);
-					resolve(val);
-				};
-			});
+	send({
+		jsonrpc: "2.0",
+		id: 1,
+		method: "initialize",
+		params: {
+			protocolVersion: "2024-11-05",
+			capabilities: {},
+			clientInfo: { name: "lazy-test", version: "1" },
+		},
+	});
+	await waitForId(1, 5_000);
+	send({ jsonrpc: "2.0", method: "notifications/initialized" });
+
+	send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+	const toolsResponse = (await waitForId(2, 5_000)) as {
+		result?: { tools?: { name: string }[] };
+	};
+	const toolNames = toolsResponse.result?.tools?.map((t) => t.name) ?? [];
+
+	return { toolNames, child, killChild, send, waitForId };
+}
+
+describe("lazy isolated-vm", () => {
+	it("server starts without loading isolated-vm; search_docs works; execute fails", async () => {
+		const { toolNames, killChild, send, waitForId } = await spawnAndListTools();
 
 		try {
-			send({
-				jsonrpc: "2.0",
-				id: 1,
-				method: "initialize",
-				params: {
-					protocolVersion: "2024-11-05",
-					capabilities: {},
-					clientInfo: { name: "lazy-test", version: "1" },
-				},
-			});
-			await waitForId(1, 5_000);
-
-			send({ jsonrpc: "2.0", method: "notifications/initialized" });
-
-			send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-			const toolsResponse = (await waitForId(2, 5_000)) as {
-				result?: { tools?: { name: string }[] };
-			};
-			const toolNames = toolsResponse.result?.tools?.map((t) => t.name) ?? [];
-
+			/** Default surface: only execute + search_docs. */
 			expect(toolNames).toContain("execute");
 			expect(toolNames).toContain("search_docs");
-			expect(toolNames).toContain("debank_resolve");
-			expect(toolNames).toContain("list_endpoints");
-			expect(toolNames).toContain("get_endpoint_schema");
-			expect(toolNames).toContain("invoke_endpoint");
+			expect(toolNames).not.toContain("debank_resolve");
+			expect(toolNames).not.toContain("list_endpoints");
+			expect(toolNames).not.toContain("get_endpoint_schema");
+			expect(toolNames).not.toContain("invoke_endpoint");
 
 			send({
 				jsonrpc: "2.0",
@@ -166,48 +222,24 @@ describe("lazy isolated-vm", () => {
 			expect(inner.error).toMatch(/isolated-vm native module failed to load/);
 			expect(inner.error).toMatch(/pnpm rebuild isolated-vm/);
 		} finally {
-			try {
-				child.stdin.end();
-			} catch {
-				/* already closed */
-			}
-			const exited = new Promise<void>((resolve) => {
-				if (child.exitCode !== null || child.signalCode !== null)
-					return resolve();
-				child.once("exit", () => resolve());
-				child.once("close", () => resolve());
-			});
-			if (!child.killed) child.kill();
-			const sigtermTimer: { fired: boolean } = { fired: false };
-			await Promise.race([
-				exited,
-				new Promise<void>((resolve) => {
-					const t = setTimeout(() => {
-						sigtermTimer.fired = true;
-						if (
-							!child.killed ||
-							(child.exitCode === null && child.signalCode === null)
-						) {
-							child.kill("SIGKILL");
-						}
-						resolve();
-					}, 2_000);
-					t.unref?.();
-				}),
-			]);
-			if (
-				sigtermTimer.fired &&
-				child.exitCode === null &&
-				child.signalCode === null
-			) {
-				await Promise.race([
-					exited,
-					new Promise<void>((resolve) => {
-						const t = setTimeout(resolve, 1_000);
-						t.unref?.();
-					}),
-				]);
-			}
+			await killChild();
+		}
+	}, 30_000);
+
+	it("with DEBANK_MCP_TOOLS=dynamic, the extra tools register", async () => {
+		const { toolNames, killChild } = await spawnAndListTools({
+			DEBANK_MCP_TOOLS: "dynamic",
+		});
+
+		try {
+			expect(toolNames).toContain("execute");
+			expect(toolNames).toContain("search_docs");
+			expect(toolNames).toContain("debank_resolve");
+			expect(toolNames).toContain("list_endpoints");
+			expect(toolNames).toContain("get_endpoint_schema");
+			expect(toolNames).toContain("invoke_endpoint");
+		} finally {
+			await killChild();
 		}
 	}, 30_000);
 });

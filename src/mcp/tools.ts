@@ -1,10 +1,10 @@
 // src/mcp/tools.ts
 //
-// Default convenience tool: a top-level chain-name resolver. Kept as a
-// top-level tool (rather than reachable only via execute) because the
-// underlying lookup is an in-memory string table — spinning up an
-// isolated-vm isolate just to resolve "BSC" → "bsc" is overhead the
-// agent shouldn't pay.
+// Top-level chain-name resolver. Gated behind --tools=dynamic (along with
+// the endpoint dispatch triad). The underlying lookup is an in-memory
+// string table — kept as a top-level tool rather than reachable only via
+// execute because spinning up an isolated-vm isolate just to resolve
+// "BSC" → "bsc" is overhead the agent shouldn't pay.
 
 import { z } from "zod";
 import { resolveChain } from "../lib/entity-resolver.js";
@@ -49,4 +49,4 @@ export const resolveTool = {
 	},
 };
 
-export const defaultConvenienceTools = [resolveTool];
+export const dynamicConvenienceTools = [resolveTool];

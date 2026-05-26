@@ -1,24 +1,13 @@
 # DeBank MCP — Code Mode Operational Guide
 
-This server exposes two primary tools to agents: `execute` (sandboxed JavaScript against a DeBank client) and `search_docs` (search SDK documentation). One convenience tool — `debank_resolve` — is also available by default for in-memory chain-name → chain-id lookups. Three dynamic-endpoint tools — `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint` — enable per-endpoint access without Code Mode (use `invoke_endpoint({ name: "debank.chain.getSupportedChainList", params: {} })` for the supported-chain list).
+This server exposes two primary tools to agents: `execute` (sandboxed JavaScript against a DeBank client) and `search_docs` (search SDK documentation). These two tools handle the full workflow — discovery, projection, multi-step composition — through agent-authored JavaScript in `execute`.
+
+For agents that prefer explicit per-endpoint dispatch instead of authoring JS bodies, start the server with `--tools=dynamic` (or `DEBANK_MCP_TOOLS=dynamic`). That adds four tools: `debank_resolve`, `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint` (the last carrying an optional `jq_filter` for host-side projection).
 
 ## When to use which tool
 
-- **`execute`** — multi-step workflows with loops, joins, conditional logic, or custom projection. The expressive default.
-- **`invoke_endpoint`** — single API call with a jq filter for projection. Lighter-weight than `execute` when you just need a few fields from one endpoint.
-- **`list_endpoints`** + **`get_endpoint_schema`** — discovery. Use when you don't know what's available or what an endpoint's params/response look like.
-
-### `invoke_endpoint` quick reference
-
-```json
-{
-  "name": "debank.user.getUserChainBalance",
-  "params": { "id": "0xWALLET", "chain_id": "eth" },
-  "jq_filter": ".usd_value"
-}
-```
-
-The response is the jq-projected JSON. Use `get_endpoint_schema` first to see the full response shape.
+- **`execute`** — the default and recommended path. Multi-step workflows, loops, joins, conditional logic, custom projection. The expressive default.
+- **`search_docs`** — discovery. Find the right method by free-text query before authoring `execute` code.
 
 ## Top operations
 
@@ -187,3 +176,19 @@ async function run(debank) {
   return curve.usd_value_list.slice(-7);   // last 7 data points
 }
 ```
+
+## --tools=dynamic mode (opt-in)
+
+Start the server with `--tools=dynamic` or set `DEBANK_MCP_TOOLS=dynamic` to register four additional tools: `debank_resolve`, `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint`.
+
+### `invoke_endpoint` quick reference
+
+```json
+{
+  "name": "debank.user.getUserChainBalance",
+  "params": { "id": "0xWALLET", "chain_id": "eth" },
+  "jq_filter": ".usd_value"
+}
+```
+
+The response is the jq-projected JSON. Use `get_endpoint_schema` first to see the full response shape.
