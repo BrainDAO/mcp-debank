@@ -29,7 +29,7 @@ When agents need to compress a large response, the answer is `execute` — agent
 
 2. **The reference architecture doesn't do it.** The CoinGecko Stainless MCP server — the architectural template we modeled v0.2 on — has no host-side response filter. It relies entirely on Code Mode for response shaping.
 
-3. **The filter was dead in the new default surface.** Under v0.2 the four default tools are `execute`, `search_docs`, `debank_resolve`, and `debank_get_supported_chain_list`. None of them invoke the filter. It only fired on `--legacy-tools` paths with `_userQuery` set — a v0.1 affordance for a v0.1-only problem.
+3. **The filter was dead in the new default surface.** Under v0.2 the default tools are `execute`, `search_docs`, `debank_resolve`, and the dynamic-tools triad (`list_endpoints`, `get_endpoint_schema`, `invoke_endpoint`). None of them invoke the v0.1 LLM filter. The filter only fired on `--legacy-tools` paths with `_userQuery` set — a v0.1 affordance for a v0.1-only problem.
 
 4. **The mutable singleton state was a real bug source.** During the v0.2 refactor we wrote a regression test (`tool-handlers.test.ts` "calls without `_userQuery` clear singleton state from a prior call (no leak)") because a leaked `currentQuery` from a prior tool call would silently filter the next response against the wrong query. The fix was a `setQuery("")` clear-broadcast in every code path. Deleting the state deletes the bug class — no clear-broadcast needed, no leak possible.
 

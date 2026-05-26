@@ -112,8 +112,9 @@ describe("lazy isolated-vm", () => {
 			expect(toolNames).toContain("execute");
 			expect(toolNames).toContain("search_docs");
 			expect(toolNames).toContain("debank_resolve");
-			expect(toolNames).toContain("debank_get_supported_chain_list");
-			expect(toolNames).toContain("debank_get_user_chain_balance");
+			expect(toolNames).toContain("list_endpoints");
+			expect(toolNames).toContain("get_endpoint_schema");
+			expect(toolNames).toContain("invoke_endpoint");
 
 			send({
 				jsonrpc: "2.0",

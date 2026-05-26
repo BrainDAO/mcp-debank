@@ -1,10 +1,13 @@
 // src/mcp/tools.ts
 //
-// Two default convenience tools registered alongside execute and search_docs.
+// Default convenience tool: a top-level chain-name resolver. Kept as a
+// top-level tool (rather than reachable only via execute) because the
+// underlying lookup is an in-memory string table — spinning up an
+// isolated-vm isolate just to resolve "BSC" → "bsc" is overhead the
+// agent shouldn't pay.
 
 import { z } from "zod";
 import { resolveChain } from "../lib/entity-resolver.js";
-import { chainService } from "../services/index.js";
 
 const RESOLVE_PARAMS = z.object({
 	name: z
@@ -46,21 +49,4 @@ export const resolveTool = {
 	},
 };
 
-const CHAIN_LIST_PARAMS = z.object({});
-
-export const supportedChainListTool = {
-	name: "debank_get_supported_chain_list",
-	description:
-		"Retrieve a comprehensive list of all blockchain chains supported by the DeBank API. Returns information about each chain including their IDs, names, logo URLs, native token IDs, wrapped token IDs, and pre-execution support status. Use this to discover available chains before calling other chain-specific endpoints.",
-	parameters: CHAIN_LIST_PARAMS,
-	annotations: { readOnlyHint: true },
-	execute: async (_args: z.infer<typeof CHAIN_LIST_PARAMS>) => {
-		const data = await chainService.getSupportedChainListRaw();
-		return {
-			content: [{ type: "text" as const, text: JSON.stringify(data) }],
-			isError: false,
-		};
-	},
-};
-
-export const defaultConvenienceTools = [resolveTool, supportedChainListTool];
+export const defaultConvenienceTools = [resolveTool];

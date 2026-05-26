@@ -137,7 +137,7 @@ export const searchDocsTool = {
 						type: "text" as const,
 						text: JSON.stringify({
 							results: [],
-							hint: "No matches. Try broader terms, or call debank_get_supported_chain_list / debank_resolve for chain grounding.",
+							hint: "No matches. Try broader terms, or call list_endpoints to discover what's available, or debank_resolve for chain grounding.",
 						}),
 					},
 				],

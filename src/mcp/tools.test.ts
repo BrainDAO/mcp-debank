@@ -48,36 +48,3 @@ describe("debank_resolve", () => {
 		);
 	});
 });
-
-describe("debank_get_supported_chain_list (default surface)", () => {
-	it("returns chainService.getSupportedChainListRaw as JSON", async () => {
-		const servicesMod = await import("../services/index.js");
-		const mockChains = [
-			{ id: "eth", name: "Ethereum" },
-			{ id: "bsc", name: "BSC" },
-		];
-		const getList = vi
-			.spyOn(servicesMod.chainService, "getSupportedChainListRaw")
-			.mockResolvedValue(mockChains as never);
-
-		const { supportedChainListTool } = await import("./tools.js");
-		const res = await supportedChainListTool.execute({});
-
-		expect(getList).toHaveBeenCalledTimes(1);
-		expect(res.isError).toBe(false);
-		expect(JSON.parse(res.content[0]?.text ?? "")).toEqual(mockChains);
-	});
-
-	it("description matches v0.1 verbatim and parameters schema is empty", async () => {
-		const { supportedChainListTool } = await import("./tools.js");
-		expect(supportedChainListTool.description).toBe(
-			"Retrieve a comprehensive list of all blockchain chains supported by the DeBank API. Returns information about each chain including their IDs, names, logo URLs, native token IDs, wrapped token IDs, and pre-execution support status. Use this to discover available chains before calling other chain-specific endpoints.",
-		);
-		const shape = (
-			supportedChainListTool.parameters as unknown as {
-				shape?: Record<string, unknown>;
-			}
-		).shape;
-		expect(Object.keys(shape ?? {})).toEqual([]);
-	});
-});

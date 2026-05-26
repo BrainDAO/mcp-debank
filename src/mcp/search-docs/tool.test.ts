@@ -21,8 +21,6 @@ describe("search_docs", () => {
 		});
 		const inner = JSON.parse(res.content[0]?.text);
 		expect(inner.results).toEqual([]);
-		expect(inner.hint).toMatch(
-			/debank_resolve|debank_get_supported_chain_list/,
-		);
+		expect(inner.hint).toMatch(/list_endpoints|debank_resolve/);
 	});
 });
