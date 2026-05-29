@@ -30,6 +30,14 @@ describe("resolveWrappedToken", () => {
 		expect(resolveWrappedToken("", "eth")).toBeNull();
 	});
 
+	it("returns null for pair/LP symbols that merely contain a keyword", () => {
+		// Exact-match (not substring): a symbol like WETH-USDT must NOT be
+		// misresolved to the chain's wrapped-native address.
+		expect(resolveWrappedToken("WETH-USDT", "eth")).toBeNull();
+		expect(resolveWrappedToken("native-usdt-pool", "eth")).toBeNull();
+		expect(resolveWrappedToken("wethereum", "eth")).toBeNull();
+	});
+
 	it("returns null for unknown chains regardless of keyword", () => {
 		expect(resolveWrappedToken("WETH", "definitely_not_a_chain")).toBeNull();
 	});

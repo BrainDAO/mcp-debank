@@ -62,6 +62,11 @@ export async function runInSandbox(
 
 	const logLines: string[] = [];
 	const errLines: string[] = [];
+	// Host-side timers created by the guest `sleep()` helper. Tracked so the
+	// finally block can clear any still-pending timer when the sandbox is
+	// disposed (abort/timeout/throw), rather than leaving them to linger in the
+	// event loop until they fire on their own.
+	const activeTimers = new Set<NodeJS.Timeout>();
 
 	/**
 	 * Move getIvm() and Isolate construction INSIDE the try so any failure
@@ -128,7 +133,13 @@ export async function runInSandbox(
 						0,
 						Math.min(Number(ms) || 0, SCRIPT_DEADLINE_MS),
 					);
-					await new Promise((r) => setTimeout(r, clamped));
+					await new Promise<void>((r) => {
+						const t = setTimeout(() => {
+							activeTimers.delete(t);
+							r();
+						}, clamped);
+						activeTimers.add(t);
+					});
 				}),
 			],
 		);
@@ -196,6 +207,8 @@ export async function runInSandbox(
 		};
 	} finally {
 		if (timeoutHandle) clearTimeout(timeoutHandle);
+		for (const t of activeTimers) clearTimeout(t);
+		activeTimers.clear();
 		dispose();
 	}
 }

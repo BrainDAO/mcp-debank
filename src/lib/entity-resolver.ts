@@ -14,6 +14,8 @@ const WRAPPED_TOKEN_KEYWORDS = [
 	"wavax",
 	"wrapped",
 	"native",
+	"wrapped native",
+	"native token",
 ] as const;
 
 /**
@@ -30,19 +32,23 @@ export function looksLikeChainName(str: string | undefined): boolean {
 }
 
 /**
- * True when `str` is one of the wrapped-token keywords resolveWrappedToken
- * can resolve to an address. Returns false for 0x-addresses (already an
- * address; no resolution needed) and for any other string that doesn't
- * lowercase-contain one of the keywords.
+ * True when `str` is exactly one of the wrapped-token keywords
+ * resolveWrappedToken can resolve to an address. Returns false for
+ * 0x-addresses (already an address; no resolution needed) and for any other
+ * string that isn't an exact (case-insensitive) keyword match.
+ *
+ * Exact match — not substring — so pair/LP symbols that merely contain a
+ * keyword ("WETH-USDT", "native-usdt-pool") are NOT misresolved to the
+ * chain's wrapped native address.
  *
  * Private — the keyword set is implementation detail of resolveWrappedToken.
  */
 function isWrappedTokenKeyword(str: string | undefined): boolean {
 	if (!str) return false;
-	const s = String(str);
+	const s = String(str).trim();
 	if (/^0x[a-f0-9]{40}$/i.test(s)) return false;
 	const lower = s.toLowerCase();
-	return WRAPPED_TOKEN_KEYWORDS.some((k) => lower.includes(k));
+	return (WRAPPED_TOKEN_KEYWORDS as readonly string[]).includes(lower);
 }
 
 const chainResolver = createResolver({
