@@ -98,8 +98,43 @@ describe("invoke_endpoint", () => {
 		const inner = JSON.parse(res.content[0]?.text);
 		expect(res.isError).toBe(false);
 		expect(inner).toEqual({ id: "eth", name: "Ethereum" });
-		expect(fakeRawFn).toHaveBeenCalledWith({ id: "eth" });
+		expect(fakeRawFn).toHaveBeenCalledWith(
+			{ id: "eth" },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				timeout: expect.any(Number),
+			}),
+		);
 	});
+
+	it("stalled rawFn surfaces canonical 5s timeout, not a hang", async () => {
+		const prev = process.env.DEBANK_MCP_INVOKE_ABORT_MS;
+		process.env.DEBANK_MCP_INVOKE_ABORT_MS = "100";
+		vi.resetModules();
+		try {
+			const metadataMod = await import("../legacy/tool-metadata.js");
+			const fakeRawFn = (
+				metadataMod as unknown as { __fakeRawFn: ReturnType<typeof vi.fn> }
+			).__fakeRawFn;
+			fakeRawFn.mockImplementationOnce(
+				() => new Promise(() => {}) as Promise<never>,
+			);
+
+			const { invokeEndpointTool } = await import("./tools.js");
+			const res = await invokeEndpointTool.execute({
+				name: "debank.chain.getChain",
+				params: { id: "eth" },
+			});
+			const inner = JSON.parse(res.content[0]?.text);
+			expect(res.isError).toBe(true);
+			expect(inner.error).toContain("DeBank call timed out after 5s");
+			expect(inner.error).toContain("debank.chain.getChain");
+		} finally {
+			if (prev === undefined) delete process.env.DEBANK_MCP_INVOKE_ABORT_MS;
+			else process.env.DEBANK_MCP_INVOKE_ABORT_MS = prev;
+			vi.resetModules();
+		}
+	}, 2_000);
 
 	it("applies jq_filter to the response", async () => {
 		const metadataMod = await import("../legacy/tool-metadata.js");

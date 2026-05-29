@@ -9,6 +9,14 @@ import { JQ } from "jqts";
 import { z } from "zod";
 import { TOOL_METADATA } from "../legacy/tool-metadata.js";
 
+// Same dual-timeout policy as execute/client.ts: 5s outer AbortController
+// races a 6s axios timeout so a stalled upstream surfaces as the canonical
+// "DeBank call timed out after 5s" message instead of hanging the tool call.
+// DEBANK_MCP_INVOKE_ABORT_MS is a test-only knob (mirrors the sandbox deadline
+// override pattern); production uses the hard-coded 5s.
+const INVOKE_ABORT_MS = Number(process.env.DEBANK_MCP_INVOKE_ABORT_MS) || 5_000;
+const INVOKE_AXIOS_MS = 6_000;
+
 const LIST_PARAMS = z.object({
 	filter: z
 		.string()
@@ -172,9 +180,27 @@ export const invokeEndpointTool = {
 			};
 		}
 
+		const controller = new AbortController();
+		let timer: NodeJS.Timeout | undefined;
+		const abortPromise = new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				controller.abort();
+				reject(new Error(`DeBank call timed out after 5s: ${args.name}`));
+			}, INVOKE_ABORT_MS);
+			timer.unref?.();
+		});
 		try {
-			const rawFn = await m.sandboxImpl();
-			const response = await rawFn(parseResult.data);
+			const rawFn = (await m.sandboxImpl()) as (
+				args: unknown,
+				options: { signal: AbortSignal; timeout: number },
+			) => Promise<unknown>;
+			const response = await Promise.race([
+				rawFn(parseResult.data, {
+					signal: controller.signal,
+					timeout: INVOKE_AXIOS_MS,
+				}),
+				abortPromise,
+			]);
 
 			if (args.jq_filter) {
 				const outputs = JQ.compile(args.jq_filter).evaluate(
@@ -192,7 +218,22 @@ export const invokeEndpointTool = {
 				isError: false,
 			};
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const e = err as Error & { code?: string };
+			let msg: string;
+			if (
+				typeof e.message === "string" &&
+				e.message.startsWith("DeBank call timed out after 5s")
+			) {
+				msg = e.message;
+			} else {
+				const isAbort = controller.signal.aborted;
+				const isAxiosTimeout =
+					e.code === "ECONNABORTED" || e.code === "ETIMEDOUT";
+				msg =
+					isAbort || isAxiosTimeout
+						? `DeBank call timed out after 5s: ${args.name}`
+						: e.message || String(err);
+			}
 			return {
 				content: [
 					{
@@ -204,6 +245,8 @@ export const invokeEndpointTool = {
 				],
 				isError: true,
 			};
+		} finally {
+			if (timer) clearTimeout(timer);
 		}
 	},
 };
