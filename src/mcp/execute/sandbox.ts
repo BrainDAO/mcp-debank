@@ -138,6 +138,7 @@ export async function runInSandbox(
 							activeTimers.delete(t);
 							r();
 						}, clamped);
+						t.unref?.();
 						activeTimers.add(t);
 					});
 				}),
