@@ -1,8 +1,8 @@
 // src/mcp/legacy/tool-metadata.import.test.ts
 //
 // Verifies that importing tool-metadata.js at runtime DOES NOT load any module
-// with env-dependent side effects (services/index.ts, lib/entity-resolver.ts,
-// lib/cache/cache-manager.ts). The probe runs in a child Node process with:
+// with env-dependent side effects (services/index.ts, lib/entity-resolver.ts).
+// The probe runs in a child Node process with:
 //   1. No env vars beyond PATH — so a transitive env.ts import triggers a
 //      Zod parse failure (env.ts:18-29 requires DEBANK_API_KEY or both
 //      IQ_GATEWAY_*).

@@ -1,9 +1,6 @@
-import dedent from "dedent";
 import { chainIds } from "../enums/chains.js";
-import { cachedContentName } from "./cache/cache-manager.js";
-import { createResolver } from "./resolvers/base-resolver.js";
+import type { ChainInfo } from "../types.js";
 import { createChildLogger } from "./utils/index.js";
-import { sanitizeChainId } from "./utils/sanitizers.js";
 
 const logger = createChildLogger("DeBank Entity Resolver");
 
@@ -19,14 +16,65 @@ const WRAPPED_TOKEN_KEYWORDS = [
 ] as const;
 
 /**
- * True when `str` looks like a chain NAME (e.g. "Ethereum", "Binance Smart
- * Chain") rather than a DeBank chain ID (e.g. "eth"). Heuristic: presence of
- * uppercase letters or whitespace. Used by resolveChains to skip the LLM
- * round-trip on items that are already lowercase IDs.
+ * Aliases that don't show up as exact name matches against DeBank's catalog.
+ * DeBank's `chain.name` for BSC is "BNB Chain"; for Polygon it's "Polygon" (so
+ * unaliased); for OKExChain it's "OKC". The table covers the user-facing
+ * names that don't tokenize the same way.
  */
-function looksLikeChainName(str: string | undefined): boolean {
-	if (!str) return false;
-	return /[A-Z\s]/.test(String(str));
+const CHAIN_ALIASES: Record<string, string> = {
+	binance: "bsc",
+	"binance smart chain": "bsc",
+	"bnb chain": "bsc",
+	bnb: "bsc",
+	bsc: "bsc",
+	matic: "matic",
+	polygon: "matic",
+	okexchain: "okt",
+	"okx chain": "okt",
+	"okt chain": "okt",
+	okt: "okt",
+	okc: "okt",
+	gnosis: "xdai",
+	"gnosis chain": "xdai",
+	"huobi eco chain": "heco",
+	huobi: "heco",
+	avalanche: "avax",
+	"avalanche c-chain": "avax",
+	optimism: "op",
+	arbitrum: "arb",
+	"arbitrum one": "arb",
+	ethereum: "eth",
+};
+
+const CHAIN_LIST_TTL_MS = 24 * 60 * 60 * 1000;
+let chainListCache: { chains: ChainInfo[]; loadedAt: number } | null = null;
+
+/**
+ * Fetch DeBank's supported chain catalog. Cached 24h; on network failure falls
+ * back to the bundled static catalog so resolution always has SOMETHING to work
+ * with — at the cost of possibly missing chains DeBank added since the last
+ * package release.
+ *
+ * Dynamically imports services to keep entity-resolver.ts cheap to load —
+ * service singletons get constructed only on first resolveChain call.
+ */
+async function getChainList(): Promise<ChainInfo[]> {
+	const now = Date.now();
+	if (chainListCache && now - chainListCache.loadedAt < CHAIN_LIST_TTL_MS) {
+		return chainListCache.chains;
+	}
+	try {
+		const { chainService } = await import("../services/index.js");
+		const chains = await chainService.getSupportedChainListRaw();
+		chainListCache = { chains, loadedAt: now };
+		return chains;
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger.warn(
+			`Failed to fetch chain list from DeBank, falling back to bundled catalog: ${msg}`,
+		);
+		return chainIds as unknown as ChainInfo[];
+	}
 }
 
 /**
@@ -49,44 +97,46 @@ function isWrappedTokenKeyword(str: string | undefined): boolean {
 	return (WRAPPED_TOKEN_KEYWORDS as readonly string[]).includes(lower);
 }
 
-const chainResolver = createResolver({
-	entityType: "chain",
-	cacheName: cachedContentName,
-	entities: chainIds,
-	getContext: (entities) =>
-		entities.map((chain) => `${chain.name}: ${chain.id}`).join("\n"),
-	sanitize: sanitizeChainId,
-	validate: (chainId, entities) =>
-		entities.some((chain) => chain.id === chainId),
-	fallbackPrompt: (name, context) => dedent`
-		You are a blockchain chain resolver. Given a user's input for a blockchain name, find the matching DeBank chain ID.
+/**
+ * Resolve a user-facing chain name/alias to a DeBank chain ID using DeBank's
+ * own chain catalog (cached). Match order:
+ *   1. exact ID (case-insensitive)
+ *   2. exact name (case-insensitive)
+ *   3. alias table
+ *   4. substring match on name (either direction)
+ * Returns null when nothing matches.
+ */
+export async function resolveChain(input: string): Promise<string | null> {
+	if (typeof input !== "string") return null;
+	const trimmed = input.trim();
+	if (!trimmed) return null;
+	const lower = trimmed.toLowerCase();
 
-		Available chains (format: Name: id):
-		${context}
+	const chains = await getChainList();
 
-		User input: "${name}"
+	const byId = chains.find((c) => c.id.toLowerCase() === lower);
+	if (byId) return byId.id;
 
-		Rules:
-		1. Match the user input to the most appropriate chain from the list
-		2. Handle common variations and abbreviations (e.g., "BSC" = "BNB Chain", "Polygon" = "Polygon", "ETH" = "Ethereum")
-		3. Return ONLY the chain ID (the part after the colon), nothing else
-		4. If no match is found, return the exact token "__NOT_FOUND__"
+	const byName = chains.find((c) => c.name.toLowerCase() === lower);
+	if (byName) return byName.id;
 
-		Examples:
-		- Input: "Ethereum" → Output: eth
-		- Input: "BSC" → Output: bsc
-		- Input: "Binance Smart Chain" → Output: bsc
-		- Input: "Polygon" → Output: matic
-		- Input: "Arbitrum" → Output: arb
-		- Input: "Made Up Chain" → Output: __NOT_FOUND__
+	const aliasTarget = CHAIN_ALIASES[lower];
+	if (aliasTarget) {
+		const verified = chains.find((c) => c.id === aliasTarget);
+		if (verified) return verified.id;
+		logger.warn(
+			`Alias "${trimmed}" -> "${aliasTarget}" but that ID is not in DeBank's current chain list`,
+		);
+	}
 
-		Your response (chain ID only, or "__NOT_FOUND__" if no match):
-	`,
-});
+	const byPartial = chains.find((c) => {
+		const name = c.name.toLowerCase();
+		return name.includes(lower) || lower.includes(name);
+	});
+	if (byPartial) return byPartial.id;
 
-export async function resolveChain(name: string): Promise<string | null> {
-	const resolver = await chainResolver;
-	return await resolver(name);
+	logger.warn(`Could not resolve chain: "${input}"`);
+	return null;
 }
 
 export async function resolveChains(
@@ -94,23 +144,13 @@ export async function resolveChains(
 ): Promise<string | null> {
 	try {
 		const names = commaSeparated.split(",").map((name) => name.trim());
-
-		const resolvedPromises = names.map((name) => {
-			if (!looksLikeChainName(name)) {
-				return Promise.resolve(name);
-			}
-			return resolveChain(name);
-		});
-
-		const resolved = await Promise.all(resolvedPromises);
-
+		const resolved = await Promise.all(names.map((n) => resolveChain(n)));
 		if (resolved.some((id) => id === null)) {
 			logger.warn(`Failed to resolve some chains in: ${commaSeparated}`);
 			return null;
 		}
-
 		const result = resolved.join(",");
-		logger.info(`Resolved chains "${commaSeparated}" → "${result}"`);
+		logger.info(`Resolved chains "${commaSeparated}" -> "${result}"`);
 		return result;
 	} catch (error) {
 		logger.error(
@@ -122,11 +162,11 @@ export async function resolveChains(
 }
 
 /**
- * resolveWrappedToken is also exposed to Code Mode agents as
- * `debank.resolveWrappedToken(keyword, chainId)`. We must validate the
- * keyword here so unrelated symbols like "USDT" don't silently return the
- * chain's wrapped native address. The WRAPPED_TOKEN_KEYWORDS set is
- * co-located here — isWrappedTokenKeyword is its sole consumer.
+ * resolveWrappedToken is exposed to Code Mode agents as
+ * `debank.resolveWrappedToken(keyword, chainId)`. We validate the keyword
+ * here so unrelated symbols like "USDT" don't silently return the chain's
+ * wrapped native address. Uses the bundled chains.ts catalog (wrapped token
+ * addresses are stable contracts — no need to fetch from DeBank).
  */
 export function resolveWrappedToken(
 	tokenKeyword: string,
@@ -154,7 +194,7 @@ export function resolveWrappedToken(
 		}
 
 		logger.info(
-			`Resolved wrapped token "${tokenKeyword}" on ${chain.name} → "${chain.wrappedTokenId}"`,
+			`Resolved wrapped token "${tokenKeyword}" on ${chain.name} -> "${chain.wrappedTokenId}"`,
 		);
 		return chain.wrappedTokenId;
 	} catch (error) {

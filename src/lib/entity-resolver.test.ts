@@ -1,5 +1,75 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveWrappedToken } from "./entity-resolver.js";
+
+vi.mock("../services/index.js", () => ({
+	chainService: {
+		getSupportedChainListRaw: vi.fn(async () => [
+			{ id: "eth", name: "Ethereum" },
+			{ id: "bsc", name: "BNB Chain" },
+			{ id: "matic", name: "Polygon" },
+			{ id: "xdai", name: "Gnosis Chain" },
+			{ id: "okt", name: "OKC" },
+			{ id: "heco", name: "HECO" },
+			{ id: "arb", name: "Arbitrum" },
+		]),
+	},
+}));
+
+describe("resolveChain (DeBank-backed, deterministic match)", () => {
+	beforeEach(() => {
+		vi.resetModules();
+	});
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("exact ID (case-insensitive) wins first", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("eth")).toBe("eth");
+		expect(await resolveChain("ETH")).toBe("eth");
+	});
+
+	it("exact name (case-insensitive) when ID misses", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("Ethereum")).toBe("eth");
+		expect(await resolveChain("polygon")).toBe("matic");
+	});
+
+	it("alias table maps ambiguous user inputs", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("BSC")).toBe("bsc");
+		expect(await resolveChain("Binance Smart Chain")).toBe("bsc");
+		expect(await resolveChain("OKExChain")).toBe("okt");
+		expect(await resolveChain("Gnosis")).toBe("xdai");
+		expect(await resolveChain("Huobi")).toBe("heco");
+	});
+
+	it("partial name match as last resort", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("Gnosis Chain")).toBe("xdai");
+	});
+
+	it("returns null for unknown input", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("DefinitelyMadeUpChain")).toBeNull();
+	});
+
+	it("returns null for empty/non-string input", async () => {
+		const { resolveChain } = await import("./entity-resolver.js");
+		expect(await resolveChain("")).toBeNull();
+		expect(await resolveChain("   ")).toBeNull();
+	});
+
+	it("resolveChains: comma-separated, mixed ID + name + alias", async () => {
+		const { resolveChains } = await import("./entity-resolver.js");
+		expect(await resolveChains("eth, BSC, Polygon")).toBe("eth,bsc,matic");
+	});
+
+	it("resolveChains: returns null if any item fails", async () => {
+		const { resolveChains } = await import("./entity-resolver.js");
+		expect(await resolveChains("eth, NopeChain")).toBeNull();
+	});
+});
 
 describe("resolveWrappedToken", () => {
 	it("returns the wrapped-native address for the keyword 'WETH' on eth", () => {

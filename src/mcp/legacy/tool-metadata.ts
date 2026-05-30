@@ -5,9 +5,8 @@
 //   - src/mcp/legacy/tool-handlers.ts (server-start tool registration)
 //
 // DO NOT IMPORT from src/services/ or src/lib/entity-resolver.ts — those
-// modules have load-time side effects (singleton construction, openrouter
-// initialization, Gemini cache priming). Importing them here would defeat
-// the spec's "side-effect-free" guarantee.
+// modules have load-time side effects (singleton construction). Importing
+// them here would defeat the spec's "side-effect-free" guarantee.
 
 import { z } from "zod";
 // Type-only import — erased at compile time, preserves the

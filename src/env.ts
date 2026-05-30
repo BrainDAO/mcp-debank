@@ -21,8 +21,6 @@ const envSchema = z
 		IQ_GATEWAY_KEY: z.string().min(1).optional(),
 
 		DEBANK_API_KEY: z.string().min(1).optional(),
-
-		GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).optional(),
 	})
 	.refine(
 		(env) => {
