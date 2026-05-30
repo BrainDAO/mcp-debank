@@ -21,12 +21,10 @@ const WRAPPED_TOKEN_KEYWORDS = [
 /**
  * True when `str` looks like a chain NAME (e.g. "Ethereum", "Binance Smart
  * Chain") rather than a DeBank chain ID (e.g. "eth"). Heuristic: presence of
- * uppercase letters or whitespace.
- *
- * Exported because tool-handlers.ts uses this to decide whether to pre-resolve
- * `args.id` as a chain name for `debank_get_chain`.
+ * uppercase letters or whitespace. Used by resolveChains to skip the LLM
+ * round-trip on items that are already lowercase IDs.
  */
-export function looksLikeChainName(str: string | undefined): boolean {
+function looksLikeChainName(str: string | undefined): boolean {
 	if (!str) return false;
 	return /[A-Z\s]/.test(String(str));
 }
@@ -165,57 +163,5 @@ export function resolveWrappedToken(
 			error,
 		);
 		return null;
-	}
-}
-
-export async function resolveEntities(
-	args: Record<string, unknown>,
-): Promise<void> {
-	if (
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		looksLikeChainName(args.chain_id)
-	) {
-		const resolved = await resolveChain(args.chain_id);
-		if (resolved) {
-			args.chain_id = resolved;
-		}
-	}
-
-	if (
-		args.chain_ids &&
-		typeof args.chain_ids === "string" &&
-		looksLikeChainName(args.chain_ids)
-	) {
-		const resolved = await resolveChains(args.chain_ids);
-		if (resolved) {
-			args.chain_ids = resolved;
-		}
-	}
-
-	if (
-		args.token_id &&
-		typeof args.token_id === "string" &&
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		isWrappedTokenKeyword(args.token_id)
-	) {
-		const resolved = resolveWrappedToken(args.token_id, args.chain_id);
-		if (resolved) {
-			args.token_id = resolved;
-		}
-	}
-
-	if (
-		args.id &&
-		typeof args.id === "string" &&
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		isWrappedTokenKeyword(args.id)
-	) {
-		const resolved = resolveWrappedToken(args.id, args.chain_id);
-		if (resolved) {
-			args.id = resolved;
-		}
 	}
 }
