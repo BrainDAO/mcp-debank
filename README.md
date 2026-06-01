@@ -98,11 +98,11 @@ A real Claude Desktop session calling the MCP. The agent uses `search_docs` to d
 
 > **Note:** image files referenced below live in `docs/images/`. If you've just cloned the repo and these don't render yet, drop the PNGs into that folder.
 
-### Default tools in the slider
+### Local MCP server registered + running
 
-After wiring the server into `claude_desktop_config.json`, the two default tools (`execute` and `search_docs`) appear in Claude Desktop's tool slider.
+After wiring the server into `claude_desktop_config.json`, Claude Desktop's **Settings → Developer → Local MCP servers** panel shows the entry with a green **running** status badge and the exact `node --no-node-snapshot dist/index.js` command + arguments being spawned.
 
-![Claude Desktop tool slider showing execute and search_docs](docs/images/01-tool-slider.png)
+![Claude Desktop Local MCP servers panel showing debank-local running](docs/images/01-tool-slider.png)
 
 ### A portfolio query end-to-end
 
