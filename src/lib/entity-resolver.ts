@@ -1,53 +1,125 @@
-import dedent from "dedent";
 import { chainIds } from "../enums/chains.js";
-import { cachedContentName } from "./cache/cache-manager.js";
-import { createResolver } from "./resolvers/base-resolver.js";
+import { chainService } from "../services/index.js";
+import type { ChainInfo } from "../types.js";
 import { createChildLogger } from "./utils/index.js";
-import { sanitizeChainId } from "./utils/sanitizers.js";
-import { needsResolution } from "./utils/validators.js";
 
 const logger = createChildLogger("DeBank Entity Resolver");
 
-export { needsResolution };
+const WRAPPED_TOKEN_KEYWORDS = [
+	"weth",
+	"wbnb",
+	"wmatic",
+	"wavax",
+	"wrapped",
+	"native",
+	"wrapped native",
+	"native token",
+] as const;
 
-const chainResolver = createResolver({
-	entityType: "chain",
-	cacheName: cachedContentName,
-	entities: chainIds,
-	getContext: (entities) =>
-		entities.map((chain) => `${chain.name}: ${chain.id}`).join("\n"),
-	sanitize: sanitizeChainId,
-	validate: (chainId, entities) =>
-		entities.some((chain) => chain.id === chainId),
-	fallbackPrompt: (name, context) => dedent`
-		You are a blockchain chain resolver. Given a user's input for a blockchain name, find the matching DeBank chain ID.
+/**
+ * Aliases for inputs that share zero substring with DeBank's `chain.name` and
+ * so won't resolve via steps 1, 2, or 4 of resolveChain. Anything that exact-
+ * matches an ID/name, or whose name contains the other as a substring, does
+ * NOT belong here — it's already covered. Keep this table small; grow only
+ * when a real user-facing failure surfaces.
+ */
+const CHAIN_ALIASES: Record<string, string> = {
+	binance: "bsc",
+	"binance smart chain": "bsc",
+	okexchain: "okt",
+	"okx chain": "okt",
+	"okt chain": "okt",
+	huobi: "heco",
+	"huobi eco chain": "heco",
+};
 
-		Available chains (format: Name: id):
-		${context}
+const CHAIN_LIST_TTL_MS = 24 * 60 * 60 * 1000;
+let chainListCache: { chains: ChainInfo[]; loadedAt: number } | null = null;
 
-		User input: "${name}"
+/**
+ * Fetch DeBank's supported chain catalog. Cached 24h; on network failure falls
+ * back to the bundled static catalog so resolution always has SOMETHING to work
+ * with — at the cost of possibly missing chains DeBank added since the last
+ * package release.
+ */
+async function getChainList(): Promise<ChainInfo[]> {
+	const now = Date.now();
+	if (chainListCache && now - chainListCache.loadedAt < CHAIN_LIST_TTL_MS) {
+		return chainListCache.chains;
+	}
+	try {
+		const chains = await chainService.getSupportedChainListRaw();
+		chainListCache = { chains, loadedAt: now };
+		return chains;
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		logger.warn(
+			`Failed to fetch chain list from DeBank, falling back to bundled catalog: ${msg}`,
+		);
+		return chainIds as unknown as ChainInfo[];
+	}
+}
 
-		Rules:
-		1. Match the user input to the most appropriate chain from the list
-		2. Handle common variations and abbreviations (e.g., "BSC" = "BNB Chain", "Polygon" = "Polygon", "ETH" = "Ethereum")
-		3. Return ONLY the chain ID (the part after the colon), nothing else
-		4. If no match is found, return the exact token "__NOT_FOUND__"
+/**
+ * True when `str` is exactly one of the wrapped-token keywords
+ * resolveWrappedToken can resolve to an address. Returns false for
+ * 0x-addresses (already an address; no resolution needed) and for any other
+ * string that isn't an exact (case-insensitive) keyword match.
+ *
+ * Exact match — not substring — so pair/LP symbols that merely contain a
+ * keyword ("WETH-USDT", "native-usdt-pool") are NOT misresolved to the
+ * chain's wrapped native address.
+ *
+ * Private — the keyword set is implementation detail of resolveWrappedToken.
+ */
+function isWrappedTokenKeyword(str: string | undefined): boolean {
+	if (!str) return false;
+	const s = String(str).trim();
+	if (/^0x[a-f0-9]{40}$/i.test(s)) return false;
+	const lower = s.toLowerCase();
+	return (WRAPPED_TOKEN_KEYWORDS as readonly string[]).includes(lower);
+}
 
-		Examples:
-		- Input: "Ethereum" → Output: eth
-		- Input: "BSC" → Output: bsc
-		- Input: "Binance Smart Chain" → Output: bsc
-		- Input: "Polygon" → Output: matic
-		- Input: "Arbitrum" → Output: arb
-		- Input: "Made Up Chain" → Output: __NOT_FOUND__
+/**
+ * Resolve a user-facing chain name/alias to a DeBank chain ID using DeBank's
+ * own chain catalog (cached). Match order:
+ *   1. exact ID (case-insensitive)
+ *   2. exact name (case-insensitive)
+ *   3. alias table
+ *   4. substring match on name (either direction)
+ * Returns null when nothing matches.
+ */
+export async function resolveChain(input: string): Promise<string | null> {
+	if (typeof input !== "string") return null;
+	const trimmed = input.trim();
+	if (!trimmed) return null;
+	const lower = trimmed.toLowerCase();
 
-		Your response (chain ID only, or "__NOT_FOUND__" if no match):
-	`,
-});
+	const chains = await getChainList();
 
-export async function resolveChain(name: string): Promise<string | null> {
-	const resolver = await chainResolver;
-	return await resolver(name);
+	const byId = chains.find((c) => c.id.toLowerCase() === lower);
+	if (byId) return byId.id;
+
+	const byName = chains.find((c) => c.name.toLowerCase() === lower);
+	if (byName) return byName.id;
+
+	const aliasTarget = CHAIN_ALIASES[lower];
+	if (aliasTarget) {
+		const verified = chains.find((c) => c.id === aliasTarget);
+		if (verified) return verified.id;
+		logger.warn(
+			`Alias "${trimmed}" -> "${aliasTarget}" but that ID is not in DeBank's current chain list`,
+		);
+	}
+
+	const byPartial = chains.find((c) => {
+		const name = c.name.toLowerCase();
+		return name.includes(lower) || lower.includes(name);
+	});
+	if (byPartial) return byPartial.id;
+
+	logger.warn(`Could not resolve chain: "${input}"`);
+	return null;
 }
 
 export async function resolveChains(
@@ -55,23 +127,13 @@ export async function resolveChains(
 ): Promise<string | null> {
 	try {
 		const names = commaSeparated.split(",").map((name) => name.trim());
-
-		const resolvedPromises = names.map((name) => {
-			if (!needsResolution(name, "chain")) {
-				return Promise.resolve(name);
-			}
-			return resolveChain(name);
-		});
-
-		const resolved = await Promise.all(resolvedPromises);
-
+		const resolved = await Promise.all(names.map((n) => resolveChain(n)));
 		if (resolved.some((id) => id === null)) {
 			logger.warn(`Failed to resolve some chains in: ${commaSeparated}`);
 			return null;
 		}
-
 		const result = resolved.join(",");
-		logger.info(`Resolved chains "${commaSeparated}" → "${result}"`);
+		logger.info(`Resolved chains "${commaSeparated}" -> "${result}"`);
 		return result;
 	} catch (error) {
 		logger.error(
@@ -82,10 +144,23 @@ export async function resolveChains(
 	}
 }
 
+/**
+ * resolveWrappedToken is exposed to Code Mode agents as
+ * `debank.resolveWrappedToken(keyword, chainId)`. We validate the keyword
+ * here so unrelated symbols like "USDT" don't silently return the chain's
+ * wrapped native address. Uses the bundled chains.ts catalog (wrapped token
+ * addresses are stable contracts — no need to fetch from DeBank).
+ */
 export function resolveWrappedToken(
 	tokenKeyword: string,
 	chainId: string,
 ): string | null {
+	if (
+		typeof tokenKeyword !== "string" ||
+		!isWrappedTokenKeyword(tokenKeyword)
+	) {
+		return null;
+	}
 	try {
 		const chain = chainIds.find((c) => c.id === chainId);
 
@@ -102,7 +177,7 @@ export function resolveWrappedToken(
 		}
 
 		logger.info(
-			`Resolved wrapped token "${tokenKeyword}" on ${chain.name} → "${chain.wrappedTokenId}"`,
+			`Resolved wrapped token "${tokenKeyword}" on ${chain.name} -> "${chain.wrappedTokenId}"`,
 		);
 		return chain.wrappedTokenId;
 	} catch (error) {
@@ -111,57 +186,5 @@ export function resolveWrappedToken(
 			error,
 		);
 		return null;
-	}
-}
-
-export async function resolveEntities(
-	args: Record<string, unknown>,
-): Promise<void> {
-	if (
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		needsResolution(args.chain_id, "chain")
-	) {
-		const resolved = await resolveChain(args.chain_id);
-		if (resolved) {
-			args.chain_id = resolved;
-		}
-	}
-
-	if (
-		args.chain_ids &&
-		typeof args.chain_ids === "string" &&
-		needsResolution(args.chain_ids, "chain")
-	) {
-		const resolved = await resolveChains(args.chain_ids);
-		if (resolved) {
-			args.chain_ids = resolved;
-		}
-	}
-
-	if (
-		args.token_id &&
-		typeof args.token_id === "string" &&
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		needsResolution(args.token_id, "token")
-	) {
-		const resolved = resolveWrappedToken(args.token_id, args.chain_id);
-		if (resolved) {
-			args.token_id = resolved;
-		}
-	}
-
-	if (
-		args.id &&
-		typeof args.id === "string" &&
-		args.chain_id &&
-		typeof args.chain_id === "string" &&
-		needsResolution(args.id, "token")
-	) {
-		const resolved = resolveWrappedToken(args.id, args.chain_id);
-		if (resolved) {
-			args.id = resolved;
-		}
 	}
 }

@@ -1,16 +1,15 @@
-/**
- * Error handling utilities
- */
+// src/lib/utils/error-handler.ts
+//
+// Error handling utilities.
 
 import axios from "axios";
 
 /**
  * Extracts a user-friendly error message from an unknown error.
- * Handles Axios errors by extracting response data or message,
- * and falls back to converting other errors to Error instances.
- *
- * @param error - The error to extract a message from
- * @returns An Error instance with a descriptive message
+ * For AxiosError input, preserves `code` (e.g., ECONNABORTED, ETIMEDOUT)
+ * and stores the original error in `cause` so downstream consumers (notably
+ * the sandbox proxy timeout detection in src/mcp/execute/client.ts) can
+ * distinguish axios timeouts from other failures.
  */
 export function extractErrorMessage(error: unknown): Error {
 	if (axios.isAxiosError(error)) {
@@ -19,7 +18,11 @@ export function extractErrorMessage(error: unknown): Error {
 			typeof errorPayload === "string"
 				? errorPayload
 				: JSON.stringify(errorPayload);
-		return new Error(errorMessage);
+		const wrapped = new Error(errorMessage, { cause: error }) as Error & {
+			code?: string;
+		};
+		if (error.code) wrapped.code = error.code;
+		return wrapped;
 	}
 	return error instanceof Error ? error : new Error(String(error));
 }

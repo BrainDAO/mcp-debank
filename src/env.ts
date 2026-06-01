@@ -1,7 +1,19 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
 import { z } from "zod";
 
-config();
+// Load .env from the SCRIPT's directory's parent (repo root for dev,
+// install-dir parent for pnpm dlx), not just process cwd — MCP hosts like
+// Claude Desktop spawn `node` with a cwd that isn't the repo, so the default
+// dotenv.config() would never find a developer's .env.
+// quiet: true suppresses dotenv@17's "[dotenv@17.x.x] injecting env..." stdout
+// banner, which would otherwise corrupt the MCP JSON-RPC stream over stdio.
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+config({ quiet: true, path: path.resolve(scriptDir, "../.env") });
+// Also load from cwd as a fallback (no-op if the file above already set vars
+// — dotenv's default is { override: false }).
+config({ quiet: true });
 
 const envSchema = z
 	.object({
@@ -9,11 +21,6 @@ const envSchema = z
 		IQ_GATEWAY_KEY: z.string().min(1).optional(),
 
 		DEBANK_API_KEY: z.string().min(1).optional(),
-
-		// LLM configuration (optional)
-		OPENROUTER_API_KEY: z.string().min(1).optional(),
-		LLM_MODEL: z.string().default("openai/gpt-4.1-mini"),
-		GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).optional(),
 	})
 	.refine(
 		(env) => {

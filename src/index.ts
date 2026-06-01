@@ -1,45 +1,62 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --no-node-snapshot
+import { createRequire } from "node:module";
 import { FastMCP } from "fastmcp";
 import { createChildLogger } from "./lib/utils/logger.js";
-import { debankTools } from "./tools/index.js";
+import { endpointTools } from "./mcp/endpoints/tools.js";
+import { executeTool } from "./mcp/execute/tool.js";
+import { INSTRUCTIONS } from "./mcp/instructions/instructions.generated.js";
+import { searchDocsTool } from "./mcp/search-docs/tool.js";
+import { dynamicConvenienceTools } from "./mcp/tools.js";
 
 const logger = createChildLogger("DeBank MCP");
 
-/**
- * Initializes and starts the DeBank MCP (Model Context Protocol) Server.
- *
- * This server provides comprehensive blockchain and DeFi data including chain information,
- * protocol details, token data, user positions, NFT holdings, transaction history, and more
- * through the MCP protocol. The server communicates via stdio transport, making it suitable
- * for integration with MCP clients and AI agents.
- *
- * Key features:
- * - Chain data: Detailed information about supported blockchain networks
- * - Protocol analytics: DeFi protocol data including TVL, holders, and positions
- * - Token information: Comprehensive token details, prices, and holder data
- * - User portfolios: Detailed user positions, balances, and holdings across chains
- * - NFT data: User NFT collections and holdings
- * - Transaction history: Comprehensive transaction tracking and analysis
- * - Gas prices: Real-time gas price data for transaction optimization
- * - Transaction simulation: Pre-execution and explanation capabilities
- */
+const require = createRequire(import.meta.url);
+
+type SemverString = `${number}.${number}.${number}`;
+function assertSemver(v: string): asserts v is SemverString {
+	if (!/^\d+\.\d+\.\d+$/.test(v)) {
+		throw new Error(
+			`package.json version "${v}" is not a major.minor.patch semver string`,
+		);
+	}
+}
+const { version: rawVersion } = require("../package.json") as {
+	version: string;
+};
+assertSemver(rawVersion);
+const version: SemverString = rawVersion;
+
+function dynamicToolsEnabled(): boolean {
+	if (process.env.DEBANK_MCP_TOOLS === "dynamic") return true;
+	if (process.argv.includes("--tools=dynamic")) return true;
+	return false;
+}
+
 async function main() {
 	const server = new FastMCP({
 		name: "DeBank MCP Server",
-		version: "1.0.0",
+		version,
+		instructions: INSTRUCTIONS,
 	});
 
-	// Register all tools
 	type RegisteredTool = Parameters<typeof server.addTool>[0];
-	const registeredTools = debankTools as ReadonlyArray<RegisteredTool>;
-	for (const tool of registeredTools) {
-		server.addTool(tool);
+	const tools: RegisteredTool[] = [
+		executeTool as unknown as RegisteredTool,
+		searchDocsTool as unknown as RegisteredTool,
+	];
+	if (dynamicToolsEnabled()) {
+		tools.push(
+			...(dynamicConvenienceTools as unknown as RegisteredTool[]),
+			...(endpointTools as unknown as RegisteredTool[]),
+		);
+		logger.info(
+			"Dynamic tools enabled (--tools=dynamic or DEBANK_MCP_TOOLS=dynamic)",
+		);
 	}
+	for (const tool of tools) server.addTool(tool);
 
 	try {
-		await server.start({
-			transportType: "stdio",
-		});
+		await server.start({ transportType: "stdio" });
 	} catch (error) {
 		logger.error("Failed to start server", error as Error);
 		process.exit(1);

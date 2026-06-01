@@ -11,12 +11,19 @@ By implementing the Model Context Protocol (MCP), this server allows Large Langu
 
 ## ✨ Features
 
-*   **Multi-Chain Support**: Access data from 100+ blockchain networks supported by DeBank with auto-resolution of chain names.
-*   **Portfolio Tracking**: Monitor user positions, token balances, and protocol holdings across all chains.
-*   **DeFi Analytics**: Analyze protocols, liquidity pools, and top holders with comprehensive TVL data.
-*   **Transaction Tools**: Simulate transactions, check gas prices, and decode transaction data before on-chain submission.
-*   **NFT Discovery**: Retrieve NFT holdings and spending permissions across multiple chains.
-*   **Smart Resolution**: AI-powered entity resolution for chains, tokens, and wrapped token keywords.
+*   **Multi-Chain Support**: Access every chain DeBank indexes (currently ~85, fetched live from `/v1/chain/list`), with deterministic resolution of human-readable names (`"BSC"` → `"bsc"`).
+*   **Code Mode**: Agent writes JavaScript that runs in an `isolated-vm` sandbox against a pre-authenticated DeBank client — multi-step joins, projection, and conditional logic in one tool call.
+*   **Portfolio Tracking**: User positions, token balances, NFTs, and protocol holdings across all chains.
+*   **DeFi Analytics**: Protocols, liquidity pools, and top holders with TVL data.
+*   **Transaction Tools**: Simulate transactions, check gas, and decode tx data before signing.
+*   **Wrapped Token Helpers**: `"WETH"` / `"native token"` keywords resolve to the chain's wrapped-native contract address.
+*   **Local Docs Search**: MiniSearch index over the full API surface + cookbook recipes, embedded into the binary (no network).
+
+## Requirements
+
+- Node.js >= 22 (required by `isolated-vm` 6.x; older Node versions cannot run the `execute` sandbox).
+- The published binary's shebang already passes `--no-node-snapshot` to node. If you invoke `node dist/index.js` directly (rare), pass `--no-node-snapshot` yourself: `node --no-node-snapshot dist/index.js`.
+- `isolated-vm` is declared in `optionalDependencies`, so `pnpm install` will succeed on platforms without a prebuilt addon or a compiler toolchain (e.g. some Alpine / ARM hosts). The server still starts and `search_docs` + the dynamic-tools triad still work; only `execute` will report a load-failure error until you run `pnpm rebuild isolated-vm`.
 
 ## 📦 Installation
 
@@ -67,9 +74,7 @@ Add the following configuration to your MCP client settings (e.g., `claude_deskt
       "args": ["dlx", "@iqai/mcp-debank"],
       "env": {
         "IQ_GATEWAY_URL": "your_iq_gateway_url",
-        "IQ_GATEWAY_KEY": "your_iq_gateway_key",
-        "OPENROUTER_API_KEY": "your_openrouter_api_key",
-        "LLM_MODEL": "openai/gpt-4.1-mini"
+        "IQ_GATEWAY_KEY": "your_iq_gateway_key"
       }
     }
   }
@@ -78,14 +83,46 @@ Add the following configuration to your MCP client settings (e.g., `claude_deskt
 
 ## 🔐 Configuration (Environment Variables)
 
+You must provide **either** `DEBANK_API_KEY` **or** the `IQ_GATEWAY_URL` + `IQ_GATEWAY_KEY` pair. Server startup fails if neither path is configured.
+
 | Variable | Required | Description | Default |
 | :--- | :--- | :--- | :--- |
-| `DEBANK_API_KEY` | No | Your DeBank API key for authenticated requests | - |
-| `IQ_GATEWAY_URL` | No | Custom IQ Gateway URL for enhanced resolution | - |
-| `IQ_GATEWAY_KEY` | No | API key for IQ Gateway access | - |
-| `OPENROUTER_API_KEY` | No | OpenRouter API key for enhanced entity resolution | - |
-| `LLM_MODEL` | No | LLM model for entity resolution | `openai/gpt-4.1-mini` |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | No | Google Generative AI API key for alternative LLM | - |
+| `DEBANK_API_KEY` | one path | Your DeBank API key. Used as the `AccessKey` header on direct calls to `https://pro-openapi.debank.com`. | - |
+| `IQ_GATEWAY_URL` | other path | IQ Gateway base URL. When set together with `IQ_GATEWAY_KEY`, all DeBank calls are proxied through the gateway. | - |
+| `IQ_GATEWAY_KEY` | other path | IQ Gateway API key. Sent as the `x-api-key` header to the gateway. | - |
+| `DEBANK_MCP_TOOLS` | No | Set to `dynamic` to register the four additional tools (`debank_resolve`, `list_endpoints`, `get_endpoint_schema`, `invoke_endpoint`) alongside the default `execute` + `search_docs`. Equivalent to passing `--tools=dynamic` on the command line. | - |
+
+## 🖼️ Screenshots
+
+A real Claude Desktop session calling the MCP. The agent uses `search_docs` to discover the right method, then writes a single `execute` body that chains multiple `debank.*` calls and returns a projected table.
+
+> **Note:** image files referenced below live in `docs/images/`. If you've just cloned the repo and these don't render yet, drop the PNGs into that folder.
+
+### Local MCP server registered + running
+
+After wiring the server into `claude_desktop_config.json`, Claude Desktop's **Settings → Developer → Local MCP servers** panel shows the entry with a green **running** status badge and the exact `node --no-node-snapshot dist/index.js` command + arguments being spawned.
+
+![Claude Desktop Local MCP servers panel showing debank-local running](docs/images/01-tool-slider.png)
+
+### A portfolio query end-to-end
+
+> *"What is the balance of 0x5853… in the following protocols: eth, bsc, xdai?"*
+
+The agent reasons about the right method, writes a single `execute` body that pulls protocol balances for all three chains in parallel, and returns a per-chain summary table.
+
+![Agent answering a multi-chain portfolio query](docs/images/02-portfolio-query.png)
+
+### `search_docs` discovery flow
+
+When the agent isn't sure which method to use, it calls `search_docs` first. The MiniSearch index returns ranked matches with method names, descriptions, and example calls.
+
+![search_docs returning ranked matches](docs/images/03-search-docs.png)
+
+### Safety limits in action
+
+When a guest script exceeds the per-execute call budget or hits a timeout, the canonical error envelope surfaces a clear message that the agent can recover from (e.g. retry with a smaller scope).
+
+![Budget-exceeded envelope inside an execute response](docs/images/04-budget-exceeded.png)
 
 ## 💡 Usage Examples
 
@@ -118,262 +155,252 @@ Add the following configuration to your MCP client settings (e.g., `claude_deskt
 *   "Simulate this transaction before I submit it."
 *   "Explain what this transaction does."
 
-## 🛠️ MCP Tools
-
-<!-- AUTO-GENERATED TOOLS START -->
-
-### `debank_explain_transaction`
-Decode and explain a given transaction in human-readable terms. Returns details about function calls, parameters, and actions derived from the transaction data. Supports complex transactions across multiple protocols.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `tx` | string | ✅ | The transaction object as a JSON string to be explained. Must include transaction data field. |
-
-### `debank_get_all_protocols_of_supported_chains`
-Retrieve a list of all DeFi protocols across specified or all supported blockchain chains. Returns essential information about each protocol including ID, chain ID, name, logo URL, site URL, portfolio support status, and TVL. Returns top 20 protocols by default. Filter by specific chains using chain_ids parameter. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC'→'eth,bsc', 'Polygon'→'matic'). If omitted, returns protocols across all supported chains. Existing chain IDs like 'eth,bsc,matic' also work. |
-
-### `debank_get_chain`
-Retrieve detailed information about a specific blockchain chain supported by DeBank. Returns chain details including ID, name, logo URL, native token ID, wrapped token ID, and whether it supports pre-execution of transactions. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_gas_prices`
-Fetch current gas prices for different transaction speed levels on a specified chain. Returns prices for slow, normal, and fast transaction speeds with estimated confirmation times. Crucial for transaction cost estimation. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_list_token_information`
-Retrieve detailed information for multiple tokens at once on a specific chain. Returns an array of token objects with comprehensive details. Useful for bulk token data retrieval, with support for up to 100 token addresses per request. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `ids` | string | ✅ | Comma-separated list of token addresses (up to 100). Example: '0xdac17f958d2ee523a2206206994597c13d831ec7,0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' |
-
-### `debank_get_pool_information`
-Retrieve detailed information about a specific liquidity pool. Returns pool details including ID, chain, protocol ID, contract IDs, name, USD value of deposited assets, total user count, and count of valuable users (>$100 USD value). Essential for analyzing specific pools for investment or research. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The unique identifier of the pool (typically a contract address, e.g., '0x00000000219ab540356cbb839cbe05303d7705fa'). |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_protocol_information`
-Fetch detailed information about a specific DeFi protocol. Returns protocol details including ID, associated chain, name, logo URL, site URL, portfolio support status, and total value locked (TVL). Useful for analyzing individual protocols across different chains.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The unique identifier of the protocol (e.g., 'bsc_pancakeswap' for PancakeSwap on BSC, 'uniswap', 'aave', 'curve'). Use debank_get_all_protocols_of_supported_chains to discover protocol IDs. |
-
-### `debank_get_supported_chain_list`
-Retrieve a comprehensive list of all blockchain chains supported by the DeBank API. Returns information about each chain including their IDs, names, logo URLs, native token IDs, wrapped token IDs, and pre-execution support status. Use this to discover available chains before calling other chain-specific endpoints.
-
-_No parameters_
-
-### `debank_get_token_history_price`
-Retrieve the historical price of a specified token for a given date. Essential for financial analysis, historical comparison, and tracking price movements over time. Returns price data for the UTC time zone on the specified date. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped MATIC', '0xdac17f958d2ee523a2206206994597c13d831ec7'. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `date_at` | string | ✅ | The date for historical price data in UTC time zone. Format: YYYY-MM-DD (e.g., '2023-05-18'). |
-
-### `debank_get_token_information`
-Fetch comprehensive details about a specific token on a blockchain. Returns token information including contract address, chain, name, symbol, decimals, logo URL, associated protocol ID, USD price, verification status, and deployment timestamp. Essential for token analysis and display. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `id` | string | ✅ | Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped ETH', 'native token', '0xdac17f958d2ee523a2206206994597c13d831ec7' (USDT). |
-
-### `debank_get_top_holders_of_protocol`
-Retrieve a list of top holders within a specified DeFi protocol, ranked by their holdings. Provides insights into the distribution and concentration of holdings among participants. Supports pagination for large result sets.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The unique identifier of the protocol (e.g., 'uniswap', 'aave', 'compound'). Use debank_get_all_protocols_of_supported_chains to find protocol IDs. |
-| `start` | number |  | Pagination offset to specify where to start in the list. Default is 0, maximum is 1000. |
-| `limit` | number |  | Maximum number of top holders to retrieve. Default and maximum is 100. |
-
-### `debank_get_top_holders_of_token`
-Fetch the top holders of a specified token, showing the largest token holders ranked by their holdings. Supports both contract addresses and native token IDs. Useful for analyzing token distribution and ownership concentration. Supports pagination for detailed analysis. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped BNB', '0xdac17f958d2ee523a2206206994597c13d831ec7'. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `start` | number |  | Pagination offset. Default is 0, maximum is 10000. |
-| `limit` | number |  | Maximum number of holders to return. Default is 100. |
-
-### `debank_get_user_all_complex_protocol_list`
-Retrieve a user's detailed portfolios across all supported chains within multiple protocols. Provides a comprehensive overview of investments and positions across the entire DeFi ecosystem. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC'→'eth,bsc', 'Polygon'→'matic'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,matic' also work. |
-
-### `debank_get_user_all_history_list`
-Retrieve a user's transaction history across all supported chains. Provides a comprehensive overview of DeFi activities across the entire blockchain ecosystem. Supports pagination and chain filtering. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `start_time` | number |  | Optional timestamp to return history earlier than this time. |
-| `page_count` | number |  | Number of entries to return. Maximum is 20. |
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work. |
-
-### `debank_get_user_all_nft_list`
-Retrieve a user's NFT holdings across all supported chains. Provides an aggregate list of NFTs held by the user with details including contract ID, name, and content type. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `is_all` | boolean |  | If true, includes all NFTs. Default is true. |
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work. |
-
-### `debank_get_user_all_simple_protocol_list`
-Fetch a user's balances in protocols across all supported chains. Returns simplified protocol information including TVL and basic details. Useful for getting a quick overview of a user's protocol engagements. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work. |
-
-### `debank_get_user_all_token_list`
-Retrieve a user's token balances across all supported chains. Provides a comprehensive list of all tokens held by the user, offering insights into their wider cryptocurrency portfolio.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `is_all` | boolean |  | If true, includes all tokens in the response. Default is true. |
-
-### `debank_get_user_chain_balance`
-Fetch the current balance of a user's account on a specified blockchain chain. Returns the balance in USD value, providing a snapshot of the user's holdings on that chain. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `id` | string | ✅ | The user's wallet address. |
-
-### `debank_get_user_chain_net_curve`
-Retrieve a user's 24-hour net asset value curve on a single chain. Shows the changes in total USD value of assets over the last 24 hours, providing insights into portfolio fluctuations on that specific chain. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_user_complex_protocol_list`
-Retrieve detailed portfolios of a user on a specific chain across multiple protocols. Returns comprehensive information about the user's engagements including protocol details and portfolio items with assets, debts, and positions. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `id` | string | ✅ | The user's wallet address. |
-
-### `debank_get_user_history_list`
-Fetch a user's transaction history on a specified chain. Returns a list of past transactions with details including transaction type, tokens involved, values, and timestamps. Supports filtering by token and pagination. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `token_id` | string |  | Optional token contract address, native token ID, or wrapped token keyword to filter history. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. |
-| `start_time` | number |  | Optional timestamp to return history earlier than this time (Unix timestamp). |
-| `page_count` | number |  | Number of entries to return. Maximum is 20. |
-
-### `debank_get_user_nft_authorized_list`
-Retrieve a list of NFTs for which a user has given spending permissions on a specified chain. Returns details including contract IDs, names, symbols, spender addresses, and approved amounts for ERC1155 tokens. Important for security reviews. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_user_nft_list`
-Fetch a list of NFTs owned by a user on a specific chain. Returns NFT details including contract ID, name, description, content type, and attributes. Can filter for verified collections only. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `is_all` | boolean |  | If false, only returns NFTs from verified collections. Default is true. |
-
-### `debank_get_user_protocol`
-Get detailed information about a user's positions within a specified DeFi protocol. Returns protocol details and the user's portfolio items including assets, debts, and rewards in that protocol.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `protocol_id` | string | ✅ | The protocol ID (e.g., 'bsc_pancakeswap', 'uniswap', 'aave')Use debank_get_all_protocols_of_supported_chains to discover protocol IDs.. |
-| `id` | string | ✅ | The user's wallet address. |
-
-### `debank_get_user_token_authorized_list`
-Fetch a list of tokens for which a user has granted spending approvals on a specified chain. Returns details about each approval including amount, spender address, and associated protocol information. Useful for security audits. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-
-### `debank_get_user_token_balance`
-Retrieve a user's balance for a specific token. Returns detailed token information including name, symbol, decimals, USD price, and the user's balance amount. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc'). **WRAPPED TOKEN RESOLUTION:** Keywords like 'WETH', 'wrapped native', or 'native token' automatically resolve to the chain's wrapped token address.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `id` | string | ✅ | The user's wallet address. |
-| `token_id` | string | ✅ | Token contract address, native token ID, or wrapped token keyword. Auto-resolves: 'WETH'→WETH address, 'wrapped native'→chain's wrapped token, 'native token'→chain's wrapped token. Examples: 'WETH', 'wrapped token', '0xdac17f958d2ee523a2206206994597c13d831ec7'. |
-
-### `debank_get_user_token_list`
-Retrieve a list of tokens held by a user on a specific chain. Returns token details including symbol, decimals, USD price, and balance amounts. Can filter for core/verified tokens or include all tokens. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum', 'BSC', 'Binance Smart Chain') - automatically resolved to chain IDs ('eth', 'bsc').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_id` | string | ✅ | Chain name or ID - auto-resolved (e.g., 'Ethereum'→'eth', 'BSC'→'bsc', 'Polygon'→'matic', 'Arbitrum'→'arb'). Existing chain IDs like 'eth', 'bsc' also work. |
-| `is_all` | boolean |  | If true, returns all tokens including non-core tokens. Default is true. |
-
-### `debank_get_user_total_balance`
-Retrieve a user's total net assets across all supported chains. Calculates and returns the total USD value of assets including both tokens and protocol positions. Provides a complete snapshot of the user's DeFi portfolio.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-
-### `debank_get_user_total_net_curve`
-Retrieve a user's 24-hour net asset value curve across all chains. Provides a comprehensive view of total USD value changes over the last 24 hours, helping track overall portfolio performance. Can be filtered by specific chains. **AUTO-RESOLUTION ENABLED:** Pass chain names as users mention them (e.g., 'Ethereum, BSC, Polygon') - automatically resolved to chain IDs ('eth,bsc,matic').
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-| `chain_ids` | string |  | Comma-separated chain names or IDs - auto-resolved (e.g., 'Ethereum, BSC, Polygon'→'eth,bsc,matic', 'Arbitrum'→'arb'). If omitted, includes all supported chains. Existing chain IDs like 'eth,bsc,polygon' also work. |
-
-### `debank_get_user_used_chain_list`
-Retrieve a list of blockchain chains that a specific user has interacted with. Returns details about each chain including ID, name, logo URL, native token ID, wrapped token ID, and the birth time of the user's address on each chain.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✅ | The user's wallet address. |
-
-### `debank_pre_exec_transaction`
-Simulate the execution of a transaction or sequence of transactions before submitting them on-chain. Returns detailed information about balance changes, gas estimates, and success status. Useful for DEX swaps requiring token approvals or complex transaction sequences.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `tx` | string | ✅ | The main transaction object as a JSON string. Must include fields like from, to, data, value, etc. |
-| `pending_tx_list` | string |  | Optional JSON string array of transactions to execute before the main transaction (e.g., approval transactions). |
-
-<!-- AUTO-GENERATED TOOLS END -->
+## 🧭 Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Claude Desktop / Cursor / any MCP client                                  │
+└─────────────────────────────────┬──────────────────────────────────────────┘
+                                  │  stdio (JSON-RPC)
+                                  ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│  mcp-debank server                                                         │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  Default tools           │  Dynamic tools (opt-in via --tools=...)   │  │
+│  │  ─────────────────────   │  ────────────────────────────────────     │  │
+│  │  execute                 │  debank_resolve                           │  │
+│  │  search_docs             │  list_endpoints                           │  │
+│  │                          │  get_endpoint_schema                      │  │
+│  │                          │  invoke_endpoint  (with jq_filter)        │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│            │                              │                                │
+│  ┌─────────▼──────────────┐    ┌──────────▼──────────────┐                 │
+│  │ isolated-vm sandbox    │    │ direct dispatch         │                 │
+│  │ • 128 MiB cap          │    │ • zod schema validate   │                 │
+│  │ • 30 s wall clock      │    │ • 5 s / 6 s timeouts    │                 │
+│  │ • scope budget+slots   │    │ • jq projection         │                 │
+│  └────────────────────────┘    └─────────────────────────┘                 │
+│            └──────────────┬──────────────────┘                             │
+└───────────────────────────┼────────────────────────────────────────────────┘
+                            │  HTTPS  (AccessKey or IQ Gateway x-api-key)
+                            ▼
+                ┌────────────────────────┐
+                │  DeBank Cloud API      │
+                └────────────────────────┘
+```
+
+### How `execute` works (one call's lifetime)
+
+```mermaid
+sequenceDiagram
+  participant Agent
+  participant Tool as execute (tool.ts)
+  participant Sandbox as runInSandbox (sandbox.ts)
+  participant Guest as Guest JS<br/>(V8 isolate)
+  participant Bridge as installServiceCall<br/>(client.ts)
+  participant DeBank as DeBank API
+
+  Agent->>Tool: tools/call execute {code}
+  Tool->>Tool: createExecutionScope()<br/>(budget=100, concurrency=10)
+  Tool->>Sandbox: runInSandbox(code, installClient)
+  Sandbox->>Sandbox: new Isolate({memoryLimit:128MB})
+  Sandbox->>Bridge: installDebankClient(ctx, scope)
+  Bridge-->>Guest: install debank.user.*, debank.resolveChain, ...
+  Sandbox->>Guest: script.run({timeout:30s})
+  Guest->>Bridge: await debank.user.foo({...})
+  Bridge->>Bridge: tryReserveBudget<br/>acquireSlot<br/>safeParse(args)
+  Bridge->>DeBank: HTTPS (5s abort + 6s axios timeout)
+  DeBank-->>Bridge: JSON
+  Bridge-->>Guest: envelope {ok:true, data}
+  Guest-->>Sandbox: return projected result
+  Sandbox-->>Tool: {ok, result, log_lines, err_lines}
+  Tool->>Tool: cancelScope() in finally
+  Tool-->>Agent: MCP envelope
+```
+
+The key insight: **only the projected return value crosses the V8 boundary**. The agent writes JS that loops, joins, and filters; the host sees one returned value, not N intermediate responses.
+
+## Code Mode
+
+The preferred way to query DeBank from an AI agent is the `execute` + `search_docs` pair. These two tools handle the full workflow — discovery, projection, multi-step composition — through agent-authored JavaScript.
+
+### Default tool surface
+
+By default the server registers exactly two tools:
+
+| Tool | Purpose |
+| :--- | :--- |
+| `execute` | Run agent-authored JavaScript in a secure `isolated-vm` sandbox against a fully-configured DeBank client. Handles multi-step workflows, loops, joins, conditional logic, and custom projection. |
+| `search_docs` | Search the embedded MiniSearch index over all DeBank API methods and cookbook entries. |
+
+### `--tools=dynamic` mode
+
+Start the server with `--tools=dynamic` (or set `DEBANK_MCP_TOOLS=dynamic`) to register four additional tools:
+
+| Tool | Purpose |
+| :--- | :--- |
+| `debank_resolve` | Resolve a human-readable chain name ("BSC", "Polygon") to a DeBank chain ID. |
+| `list_endpoints` | List all available endpoint qualified names. |
+| `get_endpoint_schema` | Inspect parameters and response shape for a specific endpoint. |
+| `invoke_endpoint` | Call a single endpoint with an optional `jq_filter` for host-side projection. |
+
+**MCP client configuration with dynamic tools:**
+
+```json
+{
+  "mcpServers": {
+    "debank": {
+      "command": "pnpm",
+      "args": ["dlx", "@iqai/mcp-debank", "--tools=dynamic"],
+      "env": {
+        "DEBANK_API_KEY": "your_debank_api_key_here"
+      }
+    }
+  }
+}
+```
+
+Or via environment variable:
+
+```json
+{
+  "mcpServers": {
+    "debank": {
+      "command": "pnpm",
+      "args": ["dlx", "@iqai/mcp-debank"],
+      "env": {
+        "DEBANK_API_KEY": "your_debank_api_key_here",
+        "DEBANK_MCP_TOOLS": "dynamic"
+      }
+    }
+  }
+}
+```
+
+### `execute` — Sandboxed JavaScript
+
+Run arbitrary JavaScript inside a secure `isolated-vm` sandbox. The sandbox receives a fully-configured DeBank client instance as `debank`. All service namespaces (`debank.chain`, `debank.protocol`, `debank.token`, `debank.user`, `debank.transaction`) are available. Pool methods are under `debank.protocol`; NFT methods are under `debank.user`.
+
+**Example:**
+
+```javascript
+async function run(debank) {
+  return await debank.user.getUserTotalBalance({ id: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045" });
+}
+```
+
+**Expected response:**
+
+```json
+{
+  "total_usd_value": 1234567.89,
+  "chain_list": [
+    { "id": "eth", "usd_value": 800000.0 },
+    { "id": "arb", "usd_value": 434567.89 }
+  ]
+}
+```
+
+### `search_docs` — Local Documentation Search
+
+Search the embedded MiniSearch index over all DeBank API methods and cookbook entries.
+
+**Example query:** `user total balance`
+
+**Trimmed results:**
+
+```json
+{
+  "results": [
+    {
+      "kind": "method",
+      "qualified": "debank.user.getUserTotalBalance",
+      "name": "debank_get_user_total_balance",
+      "description": "Retrieve a user's total net assets across all supported chains. Calculates and returns the total USD value of assets including both tokens and protocol positions. Provides a complete snapshot of the user's DeFi portfolio.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "The user's wallet address." }
+        },
+        "required": ["id"]
+      },
+      "exampleCall": "await debank.user.getUserTotalBalance({id: '0x...'})"
+    }
+  ]
+}
+```
+
+### Safety limits
+
+The `execute` sandbox enforces five bounds. Defaults are tuned for legitimate Promise.all-style work; the two budget knobs are env-overridable for tests and tightening.
+
+| Limit | Default | Override | Behaviour on hit |
+| :--- | :--- | :--- | :--- |
+| Isolate memory | 128 MiB | hard-coded | Isolate is terminated; error surfaces as `"Script execution timed out"` (V8 conflates OOM with timeout in some paths) |
+| Script wall clock | 30 s | `DEBANK_MCP_SANDBOX_DEADLINE_MS` (test-only) | Returns `"Execute timed out after 30s. No call to settle, or guest stuck in a non-yielding loop."` |
+| Calls per `execute` | 100 | `DEBANK_MCP_EXECUTE_BUDGET` | Subsequent guest calls return `"Execute call budget exceeded (100 calls per invocation): <method>"` |
+| Concurrent calls | 10 | `DEBANK_MCP_EXECUTE_CONCURRENCY` | Calls queue on a semaphore; no error, just back-pressure |
+| Per-call upstream | 5 s abort + 6 s axios | hard-coded | Returns `"DeBank call timed out after 5s: <method>"` |
+
+The sandbox also blocks the source-level identifiers `process.`, `require(`, `import(`, and `eval(` at submission time. These aren't security boundaries (the isolate is) — they're a defense-in-depth check that fails fast with a clear message.
+
+Schema validation is enforced on every guest call: arguments are zod-parsed against the method's published schema before reaching the upstream service. A guest calling `debank.protocol.getTopHoldersOfProtocol({id:"uniswap", limit:999999})` is rejected with `"Invalid arguments for debank.protocol.getTopHoldersOfProtocol: Too big: expected number to be <=100"` — bounds in the metadata are real, not advisory.
+
+### `invoke_endpoint` with `jq_filter`
+
+`invoke_endpoint` (in `--tools=dynamic` mode) accepts an optional `jq_filter` that projects the response **before it crosses back to the agent** — cuts response size and skips client-side parsing.
+
+```json
+{
+  "name": "debank.user.getUserTotalBalance",
+  "params": { "id": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045" },
+  "jq_filter": ".total_usd_value"
+}
+```
+
+Returns just the scalar:
+
+```json
+1234567.89
+```
+
+Common patterns:
+
+| Goal | jq filter |
+| :--- | :--- |
+| Project one field | `.total_usd_value` |
+| Pick from each item | `.[] \| {symbol, usd_value}` |
+| Filter then project | `[.[] \| select(.usd_value > 100) \| .symbol]` |
+| Aggregate | `[.[] \| .usd_value] \| add` |
+
+The filter runs through [jqts](https://github.com/mwri/jqts) (pure-JS, no native `jq` binary) so it works on every platform.
+
+### Error envelopes
+
+Every tool returns the MCP standard `{ content: [{ type, text }], isError }` envelope. The `text` is JSON containing one of:
+
+| Shape | When you'll see it |
+| :--- | :--- |
+| `{"ok": true, "result": ..., "log_lines": [], "err_lines": []}` | `execute` succeeded; `result` is whatever `run(debank)` returned |
+| `{"ok": false, "error": "...", "log_lines": [], "err_lines": [...]}` | `execute` failed; canonical messages listed in Safety limits above |
+| `{"results": [...]}` | `search_docs` hits |
+| `{"resolved": "<id>"}` or `{"resolved": null, "error": "..."}` | `debank_resolve` |
+| `{"endpoints": [...]}` | `list_endpoints` |
+| `{"qualified", "description", "params", "response", "exampleCall"}` | `get_endpoint_schema` |
+| Raw method JSON (or jq projection) | `invoke_endpoint` success |
+| `{"error": "..."}` | `invoke_endpoint` failure (canonical timeout messages match `execute`'s) |
+
+Errors that originate at the upstream API (auth failure, ChainID-not-supported, 5xx) are passed through with DeBank's own error message — they aren't rewritten.
+
+### Migrating from earlier versions
+
+The 30 endpoint-specific `debank_*` tools (formerly behind `--legacy-tools`) are **removed**. Use `execute` for multi-step workflows, or start with `--tools=dynamic` for the per-endpoint dispatch triad:
+
+- **`list_endpoints`** — discover available endpoints and their qualified names.
+- **`get_endpoint_schema`** — inspect parameters and response shape for a specific endpoint.
+- **`invoke_endpoint`** — call a single endpoint with optional `jq_filter` for host-side projection.
+
+The `OPENROUTER_API_KEY`, `LLM_MODEL`, `GOOGLE_GENERATIVE_AI_API_KEY`, `--legacy-tools`, and `DEBANK_MCP_LEGACY` flags / env vars are no longer recognized.
 
 ## 👨‍💻 Development
 
@@ -394,10 +421,32 @@ pnpm run format
 ```
 
 ### 📁 Project Structure
-*   `src/tools/`: Tool definitions
-*   `src/services/`: API client and business logic
-*   `src/lib/`: Shared utilities and entity resolution
-*   `src/index.ts`: Server entry point
+
+```
+src/
+├── index.ts                     # Server entry point (FastMCP registration)
+├── env.ts                       # Env validation (dotenv + zod)
+├── config.ts                    # Cache TTLs
+├── types.ts                     # Shared TypeScript types
+├── services/                    # DeBank API client (one *.service.ts per domain)
+├── lib/
+│   ├── entity-resolver.ts       # resolveChain / resolveChains / resolveWrappedToken
+│   └── utils/                   # logger, error-handler
+├── mcp/
+│   ├── tools.ts                 # debank_resolve (dynamic mode)
+│   ├── execute/                 # Code Mode: sandbox + client + scope + tool
+│   ├── search-docs/             # MiniSearch index + tool + cookbook recipes
+│   ├── endpoints/               # list_endpoints / get_endpoint_schema / invoke_endpoint
+│   ├── instructions/            # instructions.md → instructions.generated.ts
+│   └── legacy/                  # tool-metadata + response-schemas (shared by execute & endpoint tools)
+└── enums/chains.ts              # Bundled chain catalog (fallback when DeBank /v1/chain/list fails)
+
+scripts/
+├── build-docs-index.ts          # Pre-build: tool-metadata + cookbook → embedded-index.ts
+└── build-instructions.ts        # Pre-build: instructions.md → instructions.generated.ts
+
+tests/integration/               # End-to-end tests (spawn the built server)
+```
 
 ## 📚 Resources
 

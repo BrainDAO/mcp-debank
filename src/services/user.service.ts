@@ -5,6 +5,7 @@
 
 import { createChildLogger } from "../lib/utils/index.js";
 import type {
+	AppProtocolPosition,
 	NetCurvePoint,
 	NFTAuthorization,
 	TokenAuthorization,
@@ -12,10 +13,11 @@ import type {
 	UserHistoryItem,
 	UserNFT,
 	UserProtocolPosition,
+	UserSimpleProtocolPosition,
 	UserTokenBalance,
 	UserTotalBalance,
 } from "../types.js";
-import { BaseService } from "./base.service.js";
+import { BaseService, type RequestOptions } from "./base.service.js";
 
 const logger = createChildLogger("DeBank User Service");
 
@@ -31,14 +33,16 @@ const logAndWrapError = (context: string, error: unknown): Error => {
 };
 
 export class UserService extends BaseService {
-	async getUserUsedChainList(args: { id: string }): Promise<string> {
+	async getUserUsedChainListRaw(
+		args: { id: string },
+		options?: RequestOptions,
+	): Promise<{ chain_id: string }[]> {
 		try {
-			const data = await this.fetchWithToolConfig<{ chain_id: string }[]>(
+			return await this.fetchWithToolConfig<{ chain_id: string }[]>(
 				`${this.baseUrl}/user/used_chain_list?id=${args.id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Chains Used by ${args.id}`,
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch used chain list for user ${args.id}`,
@@ -47,18 +51,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserChainBalance(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
+	async getUserChainBalanceRaw(
+		args: { id: string; chain_id: string },
+		options?: RequestOptions,
+	): Promise<UserChainBalance> {
 		try {
-			const data = await this.fetchWithToolConfig<UserChainBalance>(
+			return await this.fetchWithToolConfig<UserChainBalance>(
 				`${this.baseUrl}/user/chain_balance?id=${args.id}&chain_id=${args.chain_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Balance on ${args.chain_id}`,
-				currencyFields: ["usd_value"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch chain balance for user ${args.id} on ${args.chain_id}`,
@@ -67,18 +69,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserProtocol(args: {
-		id: string;
-		protocol_id: string;
-	}): Promise<string> {
+	async getUserProtocolRaw(
+		args: { id: string; protocol_id: string },
+		options?: RequestOptions,
+	): Promise<UserProtocolPosition> {
 		try {
-			const data = await this.fetchWithToolConfig<UserProtocolPosition>(
+			return await this.fetchWithToolConfig<UserProtocolPosition>(
 				`${this.baseUrl}/user/protocol?id=${args.id}&protocol_id=${args.protocol_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "Protocol Position",
-				currencyFields: ["usd_value"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch protocol ${args.protocol_id} for user ${args.id}`,
@@ -87,18 +87,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserComplexProtocolList(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
+	async getUserComplexProtocolListRaw(
+		args: { id: string; chain_id: string },
+		options?: RequestOptions,
+	): Promise<UserProtocolPosition[]> {
 		try {
-			const data = await this.fetchWithToolConfig<UserProtocolPosition[]>(
+			return await this.fetchWithToolConfig<UserProtocolPosition[]>(
 				`${this.baseUrl}/user/complex_protocol_list?id=${args.id}&chain_id=${args.chain_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Complex Protocol Positions on ${args.chain_id}`,
-				currencyFields: ["usd_value"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch complex protocol list for user ${args.id} on ${args.chain_id}`,
@@ -107,20 +105,20 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllComplexProtocolList(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
+	async getUserAllComplexProtocolListRaw(
+		args: { id: string; chain_ids?: string },
+		options?: RequestOptions,
+	): Promise<UserProtocolPosition[]> {
 		try {
 			const url = args.chain_ids
 				? `${this.baseUrl}/user/all_complex_protocol_list?id=${args.id}&chain_ids=${args.chain_ids}`
 				: `${this.baseUrl}/user/all_complex_protocol_list?id=${args.id}`;
 
-			const data = await this.fetchWithToolConfig<UserProtocolPosition[]>(url);
-			return await this.formatResponse(data, {
-				title: "All Complex Protocol Positions",
-				currencyFields: ["usd_value"],
-			});
+			return await this.fetchWithToolConfig<UserProtocolPosition[]>(
+				url,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
+			);
 		} catch (error) {
 			const context = args.chain_ids
 				? `Failed to fetch all complex protocols for user ${args.id} on chains ${args.chain_ids}`
@@ -129,20 +127,20 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllSimpleProtocolList(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
+	async getUserAllSimpleProtocolListRaw(
+		args: { id: string; chain_ids?: string },
+		options?: RequestOptions,
+	): Promise<UserProtocolPosition[]> {
 		try {
 			const url = args.chain_ids
 				? `${this.baseUrl}/user/all_simple_protocol_list?id=${args.id}&chain_ids=${args.chain_ids}`
 				: `${this.baseUrl}/user/all_simple_protocol_list?id=${args.id}`;
 
-			const data = await this.fetchWithToolConfig<UserProtocolPosition[]>(url);
-			return await this.formatResponse(data, {
-				title: "Simple Protocol Positions",
-				currencyFields: ["usd_value"],
-			});
+			return await this.fetchWithToolConfig<UserProtocolPosition[]>(
+				url,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
+			);
 		} catch (error) {
 			const context = args.chain_ids
 				? `Failed to fetch all simple protocols for user ${args.id} on chains ${args.chain_ids}`
@@ -151,20 +149,52 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTokenBalance(args: {
-		id: string;
-		chain_id: string;
-		token_id: string;
-	}): Promise<string> {
+	async getUserSimpleProtocolListRaw(
+		args: { id: string; chain_id: string },
+		options?: RequestOptions,
+	): Promise<UserSimpleProtocolPosition[]> {
 		try {
-			const data = await this.fetchWithToolConfig<UserTokenBalance>(
-				`${this.baseUrl}/user/token?id=${args.id}&chain_id=${args.chain_id}&token_id=${args.token_id}`,
+			return await this.fetchWithToolConfig<UserSimpleProtocolPosition[]>(
+				`${this.baseUrl}/user/simple_protocol_list?id=${args.id}&chain_id=${args.chain_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Token Balance: ${args.token_id}`,
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
+		} catch (error) {
+			throw logAndWrapError(
+				`Failed to fetch simple protocol list for user ${args.id} on ${args.chain_id}`,
+				error,
+			);
+		}
+	}
+
+	async getUserComplexAppListRaw(
+		args: { id: string },
+		options?: RequestOptions,
+	): Promise<AppProtocolPosition[]> {
+		try {
+			return await this.fetchWithToolConfig<AppProtocolPosition[]>(
+				`${this.baseUrl}/user/complex_app_list?id=${args.id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
+			);
+		} catch (error) {
+			throw logAndWrapError(
+				`Failed to fetch complex app list for user ${args.id}`,
+				error,
+			);
+		}
+	}
+
+	async getUserTokenBalanceRaw(
+		args: { id: string; chain_id: string; token_id: string },
+		options?: RequestOptions,
+	): Promise<UserTokenBalance> {
+		try {
+			return await this.fetchWithToolConfig<UserTokenBalance>(
+				`${this.baseUrl}/user/token?id=${args.id}&chain_id=${args.chain_id}&token_id=${args.token_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
+			);
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token balance for user ${args.id}, token ${args.token_id} on ${args.chain_id}`,
@@ -173,12 +203,15 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTokenList(args: {
-		id: string;
-		chain_id: string;
-		is_all?: boolean;
-		has_balance?: boolean;
-	}): Promise<string> {
+	async getUserTokenListRaw(
+		args: {
+			id: string;
+			chain_id: string;
+			is_all?: boolean;
+			has_balance?: boolean;
+		},
+		options?: RequestOptions,
+	): Promise<UserTokenBalance[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -191,14 +224,11 @@ export class UserService extends BaseService {
 				}),
 			});
 
-			const data = await this.fetchWithToolConfig<UserTokenBalance[]>(
+			return await this.fetchWithToolConfig<UserTokenBalance[]>(
 				`${this.baseUrl}/user/token_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Token Holdings on ${args.chain_id}`,
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token list for user ${args.id} on chain ${args.chain_id}`,
@@ -207,11 +237,14 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllTokenList(args: {
-		id: string;
-		is_all?: boolean;
-		has_balance?: boolean;
-	}): Promise<string> {
+	async getUserAllTokenListRaw(
+		args: {
+			id: string;
+			is_all?: boolean;
+			has_balance?: boolean;
+		},
+		options?: RequestOptions,
+	): Promise<UserTokenBalance[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -223,14 +256,11 @@ export class UserService extends BaseService {
 				}),
 			});
 
-			const data = await this.fetchWithToolConfig<UserTokenBalance[]>(
+			return await this.fetchWithToolConfig<UserTokenBalance[]>(
 				`${this.baseUrl}/user/all_token_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "All Token Holdings",
-				currencyFields: ["price", "usd_value"],
-				numberFields: ["amount"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch all token list for user ${args.id}`,
@@ -239,11 +269,14 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserNftList(args: {
-		id: string;
-		chain_id: string;
-		is_all?: boolean;
-	}): Promise<string> {
+	async getUserNftListRaw(
+		args: {
+			id: string;
+			chain_id: string;
+			is_all?: boolean;
+		},
+		options?: RequestOptions,
+	): Promise<UserNFT[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -253,13 +286,11 @@ export class UserService extends BaseService {
 				}),
 			});
 
-			const data = await this.fetchWithToolConfig<UserNFT[]>(
+			return await this.fetchWithToolConfig<UserNFT[]>(
 				`${this.baseUrl}/user/nft_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `NFT Collection on ${args.chain_id}`,
-				numberFields: ["amount"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch NFT list for user ${args.id} on chain ${args.chain_id}`,
@@ -268,11 +299,14 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllNftList(args: {
-		id: string;
-		is_all?: boolean;
-		chain_ids?: string;
-	}): Promise<string> {
+	async getUserAllNftListRaw(
+		args: {
+			id: string;
+			is_all?: boolean;
+			chain_ids?: string;
+		},
+		options?: RequestOptions,
+	): Promise<UserNFT[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -282,13 +316,11 @@ export class UserService extends BaseService {
 				...(args.chain_ids !== undefined && { chain_ids: args.chain_ids }),
 			});
 
-			const data = await this.fetchWithToolConfig<UserNFT[]>(
+			return await this.fetchWithToolConfig<UserNFT[]>(
 				`${this.baseUrl}/user/all_nft_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "All NFT Holdings",
-				numberFields: ["amount"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch all NFT list for user ${args.id}`,
@@ -297,13 +329,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserHistoryList(args: {
-		id: string;
-		chain_id: string;
-		start_time?: number;
-		end_time?: number;
-		page_count?: number;
-	}): Promise<string> {
+	async getUserHistoryListRaw(
+		args: {
+			id: string;
+			chain_id: string;
+			start_time?: number;
+			end_time?: number;
+			page_count?: number;
+		},
+		options?: RequestOptions,
+	): Promise<UserHistoryItem[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -319,12 +354,11 @@ export class UserService extends BaseService {
 				}),
 			});
 
-			const data = await this.fetchWithToolConfig<UserHistoryItem[]>(
+			return await this.fetchWithToolConfig<UserHistoryItem[]>(
 				`${this.baseUrl}/user/history_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Transaction History on ${args.chain_id}`,
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch transaction history for user ${args.id} on ${args.chain_id}`,
@@ -333,12 +367,15 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllHistoryList(args: {
-		id: string;
-		start_time?: number;
-		end_time?: number;
-		page_count?: number;
-	}): Promise<string> {
+	async getUserAllHistoryListRaw(
+		args: {
+			id: string;
+			start_time?: number;
+			end_time?: number;
+			page_count?: number;
+		},
+		options?: RequestOptions,
+	): Promise<UserHistoryItem[]> {
 		try {
 			const params = new URLSearchParams({
 				id: args.id,
@@ -353,12 +390,11 @@ export class UserService extends BaseService {
 				}),
 			});
 
-			const data = await this.fetchWithToolConfig<UserHistoryItem[]>(
+			return await this.fetchWithToolConfig<UserHistoryItem[]>(
 				`${this.baseUrl}/user/all_history_list?${params}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "Complete Transaction History",
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch complete transaction history for user ${args.id}`,
@@ -367,14 +403,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTokenAuthorizedList(args: { id: string }): Promise<string> {
+	async getUserTokenAuthorizedListRaw(
+		args: { id: string },
+		options?: RequestOptions,
+	): Promise<TokenAuthorization[]> {
 		try {
-			const data = await this.fetchWithToolConfig<TokenAuthorization[]>(
+			return await this.fetchWithToolConfig<TokenAuthorization[]>(
 				`${this.baseUrl}/user/token_authorized_list?id=${args.id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "Token Authorizations",
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch token authorizations for user ${args.id}`,
@@ -383,14 +421,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserNftAuthorizedList(args: { id: string }): Promise<string> {
+	async getUserNftAuthorizedListRaw(
+		args: { id: string },
+		options?: RequestOptions,
+	): Promise<NFTAuthorization[]> {
 		try {
-			const data = await this.fetchWithToolConfig<NFTAuthorization[]>(
+			return await this.fetchWithToolConfig<NFTAuthorization[]>(
 				`${this.baseUrl}/user/nft_authorized_list?id=${args.id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "NFT Authorizations",
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch NFT authorizations for user ${args.id}`,
@@ -399,15 +439,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTotalBalance(args: { id: string }): Promise<string> {
+	async getUserTotalBalanceRaw(
+		args: { id: string },
+		options?: RequestOptions,
+	): Promise<UserTotalBalance> {
 		try {
-			const data = await this.fetchWithToolConfig<UserTotalBalance>(
+			return await this.fetchWithToolConfig<UserTotalBalance>(
 				`${this.baseUrl}/user/total_balance?id=${args.id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: "Total Portfolio Balance",
-				currencyFields: ["total_usd_value"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch total balance for user ${args.id}`,
@@ -416,18 +457,16 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserChainNetCurve(args: {
-		id: string;
-		chain_id: string;
-	}): Promise<string> {
+	async getUserChainNetCurveRaw(
+		args: { id: string; chain_id: string },
+		options?: RequestOptions,
+	): Promise<NetCurvePoint[]> {
 		try {
-			const data = await this.fetchWithToolConfig<NetCurvePoint[]>(
+			return await this.fetchWithToolConfig<NetCurvePoint[]>(
 				`${this.baseUrl}/user/chain_net_curve?id=${args.id}&chain_id=${args.chain_id}`,
+				this.DEFAULT_CACHE_TTL_SECONDS,
+				options,
 			);
-			return await this.formatResponse(data, {
-				title: `Portfolio Value Over Time (${args.chain_id})`,
-				currencyFields: ["usd_value"],
-			});
 		} catch (error) {
 			throw logAndWrapError(
 				`Failed to fetch chain net curve for user ${args.id} on ${args.chain_id}`,
@@ -436,22 +475,17 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserTotalNetCurve(args: {
-		id: string;
-		chain_ids?: string;
-	}): Promise<string> {
+	async getUserTotalNetCurveRaw(
+		args: { id: string; chain_ids?: string },
+		options?: RequestOptions,
+	): Promise<{ usd_value_list: NetCurvePoint[] }> {
 		try {
 			const url = args.chain_ids
 				? `${this.baseUrl}/user/total_net_curve?id=${args.id}&chain_ids=${args.chain_ids}`
 				: `${this.baseUrl}/user/total_net_curve?id=${args.id}`;
-
-			const data = await this.fetchWithToolConfig<{
+			return await this.fetchWithToolConfig<{
 				usd_value_list: NetCurvePoint[];
-			}>(url);
-			return await this.formatResponse(data.usd_value_list, {
-				title: "Total Portfolio Value Over Time",
-				currencyFields: ["usd_value"],
-			});
+			}>(url, this.DEFAULT_CACHE_TTL_SECONDS, options);
 		} catch (error) {
 			const context = args.chain_ids
 				? `Failed to fetch total net curve for user ${args.id} on chains ${args.chain_ids}`
