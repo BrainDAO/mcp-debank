@@ -14,13 +14,16 @@ const match = /^v(\d+)\./.exec(process.version);
 const currentMajor = match ? Number(match[1]) : Number.NaN;
 
 if (!Number.isFinite(currentMajor) || currentMajor < REQUIRED_MAJOR) {
+	// Set exitCode and let the event loop drain — `process.exit(1)` terminates
+	// before async stdio pipes (the case when launched by an MCP host) finish
+	// flushing, so the diagnostic above would be truncated or lost.
 	process.stderr.write(
 		`[debank-mcp] Node ${process.version} is too old — this server requires Node >= ${REQUIRED_MAJOR}.\n` +
 			`If you're launching from Claude Desktop or another MCP host, set the "command" field to an ` +
 			`absolute path to a Node ${REQUIRED_MAJOR}+ binary (e.g. an nvm v${REQUIRED_MAJOR} path or ` +
 			`/opt/homebrew/bin/node) instead of relying on the host's PATH.\n`,
 	);
-	process.exit(1);
+	process.exitCode = 1;
+} else {
+	await import("./bootstrap.js");
 }
-
-await import("./bootstrap.js");
