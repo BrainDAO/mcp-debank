@@ -1,5 +1,17 @@
 # DeBank MCP — Code Mode Operational Guide
 
+## ⚠ CRITICAL — read this first
+
+These rules are derived from real session telemetry. Ignoring them produces 5 s timeouts and 3-minute round trips for queries that should finish in ~15 s.
+
+1. **NEVER call `debank.user.getUserAllTokenList`.** DeBank's upstream cannot serve this endpoint within the 5 s per-call timeout for any active wallet — every attempt cancels at exactly 5000 ms. Use the fan-out pattern in §4a instead. There is no scenario where the all-chains endpoint is the right choice; small wallets are also fast under the fan-out.
+2. **One `execute` call, not many.** The execute scope grants concurrency=10 and budget=100. A query that needs 30 per-chain lookups should issue ONE `execute` with `Promise.all` across all 30 — not ten executes of three. Every additional `execute` invocation costs ~10-30 s of agent thinking time between batches. Wall time is dominated by inter-execute gaps, not API latency.
+3. **Discover with `getUserTotalBalance` first, then fan out.** The `chain_list` field already tells you which chains hold value — no need to call `getUsedChainList` separately, no need to query every chain. Filter to `chain.usd_value >= 1` and fan out only to those.
+
+The canonical "all token holdings across chains" template is §4a below. Copy it; don't reinvent it.
+
+---
+
 This server exposes two primary tools to agents: `execute` (sandboxed JavaScript against a DeBank client) and `search_docs` (search SDK documentation). These two tools handle the full workflow — discovery, projection, multi-step composition — through agent-authored JavaScript in `execute`.
 
 For agents that prefer explicit per-endpoint dispatch instead of authoring JS bodies, start the server with `--tools=dynamic` (or `DEBANK_MCP_TOOLS=dynamic`). That adds four tools: `debank_resolve`, `list_endpoints`, `get_endpoint_schema`, and `invoke_endpoint` (the last carrying an optional `jq_filter` for host-side projection).
@@ -35,17 +47,42 @@ async function run(debank) {
 }
 ```
 
-### 4. Top tokens by USD value held on a chain
+### 4. Token holdings across chains — canonical template
+
+This is the **only** correct way to answer "what tokens does this wallet hold". It works for a single chain, a few chains, or 80+ chains: portfolio breakdown identifies which chains hold value, then a single `Promise.all` fans out per-chain `token_list` calls. Do not split this across multiple `execute` invocations — concurrency=10 and budget=100 let one call handle dozens of chains.
 
 ```js
 async function run(debank) {
-  const tokens = await debank.user.getUserTokenList({ id: "0xWALLET", chain_id: "eth", is_all: true });
-  return tokens
-    .map(t => ({ symbol: t.symbol, usd: (t.amount ?? 0) * (t.price ?? 0) }))
-    .sort((a, b) => b.usd - a.usd)
-    .slice(0, 10);
+  // Step 1: portfolio breakdown tells us which chains hold meaningful value.
+  // The `chain_list` field on the response is the input to step 2 — there
+  // is no need to also call getUsedChainList.
+  const portfolio = await debank.user.getUserTotalBalance({ id: "0xWALLET" });
+  const targetChains = portfolio.chain_list
+    .filter(c => c.usd_value >= 1)
+    .map(c => c.id);
+
+  // Step 2: ALL chains in ONE Promise.all — the scope handles concurrency.
+  // For a whale with 80+ used chains, step 1 typically narrows to <20 active
+  // chains, and those 20 calls complete in ~3-5 s wall time (concurrency=10).
+  const lists = await Promise.all(
+    targetChains.map(chain_id =>
+      debank.user.getUserTokenList({ id: "0xWALLET", chain_id, is_all: true })
+    )
+  );
+
+  // Step 3: flatten, project, and filter dust on the host side.
+  return lists.flat()
+    .map(t => ({
+      symbol: t.symbol,
+      chain: t.chain,
+      usd: (t.amount ?? 0) * (t.price ?? 0),
+    }))
+    .filter(t => t.usd >= 1)
+    .sort((a, b) => b.usd - a.usd);
 }
 ```
+
+If the user asked about a **specific chain only**, skip step 1 and call `getUserTokenList` directly with the known `chain_id`. The fan-out template above is the right starting point for any question that says "all chains", "everywhere", "across networks", or doesn't name a chain.
 
 ### 5. Find risky token approvals
 
