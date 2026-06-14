@@ -14,8 +14,11 @@ export type RequestOptions = { signal?: AbortSignal; timeout?: number };
 const apiLogger = createChildLogger("DeBank API");
 
 function pathOf(url: string): string {
+	// Pass a placeholder base so relative URLs still parse — without it, a
+	// future caller passing a relative URL would hit the catch and log the
+	// raw string, including any query params (e.g. ?id=0xWALLET).
 	try {
-		return new URL(url).pathname;
+		return new URL(url, "https://placeholder.invalid").pathname;
 	} catch {
 		return url;
 	}
