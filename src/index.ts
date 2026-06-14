@@ -10,8 +10,7 @@
 // Keep in sync with engines.node in package.json.
 const REQUIRED_MAJOR = 22;
 
-const match = /^v(\d+)\./.exec(process.version);
-const currentMajor = match ? Number(match[1]) : Number.NaN;
+const currentMajor = Number.parseInt(process.versions.node, 10);
 
 if (!Number.isFinite(currentMajor) || currentMajor < REQUIRED_MAJOR) {
 	// Set exitCode and let the event loop drain — `process.exit(1)` terminates

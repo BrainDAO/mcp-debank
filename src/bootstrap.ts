@@ -50,11 +50,15 @@ async function main() {
 		await server.start({ transportType: "stdio" });
 	} catch (error) {
 		logger.error("Failed to start server", error as Error);
-		process.exit(1);
+		// Defer the forced exit by one tick so winston's async transport can
+		// flush to the MCP host's stderr pipe. Mirrors the pattern in index.ts.
+		process.exitCode = 1;
+		setImmediate(() => process.exit(1));
 	}
 }
 
 main().catch((error) => {
 	logger.error("Unexpected error occurred", error);
-	process.exit(1);
+	process.exitCode = 1;
+	setImmediate(() => process.exit(1));
 });
