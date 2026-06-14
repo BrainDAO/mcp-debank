@@ -114,6 +114,11 @@ function raceWithSignal<T>(
 	});
 }
 
+// Node's setTimeout uses a 32-bit signed int internally; delays beyond this
+// overflow, fire immediately, and emit a runtime warning. Cap to prevent that
+// when callers ever pass an unusually large `cacheDuration`.
+const MAX_SETTIMEOUT_MS = 2_147_483_647;
+
 async function cachedGet<T>(
 	url: string,
 	ttlSeconds: number,
@@ -121,6 +126,11 @@ async function cachedGet<T>(
 	fn: (internalSignal: AbortSignal) => Promise<T>,
 	callerSignal?: AbortSignal,
 ): Promise<T> {
+	// Short-circuit if the caller already aborted — skip the cache lookup,
+	// timer setup, and (most importantly) the upstream HTTP request.
+	if (callerSignal?.aborted) {
+		return Promise.reject(abortedReason(callerSignal));
+	}
 	if (ttlSeconds <= 0) {
 		// Bypass cache + coalescing entirely. Use the caller's signal directly
 		// since there's no sharing — 1:1 caller→fetch.
@@ -148,9 +158,12 @@ async function cachedGet<T>(
 	// reference) so we don't need a forward declaration. Functionally
 	// equivalent: a replaced entry has a different promise; a deleted entry
 	// has no promise at all; both cases return false and skip the delete.
-	const timer = setTimeout(() => {
-		if (getCache.get(key)?.promise === promise) getCache.delete(key);
-	}, ttlSeconds * 1000);
+	const timer = setTimeout(
+		() => {
+			if (getCache.get(key)?.promise === promise) getCache.delete(key);
+		},
+		Math.min(ttlSeconds * 1000, MAX_SETTIMEOUT_MS),
+	);
 	timer.unref?.();
 	getCache.set(key, {
 		expiresAt: now + ttlSeconds * 1000,
