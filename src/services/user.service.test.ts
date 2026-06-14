@@ -141,6 +141,59 @@ describe("userService.getUserTokensAcrossChainsRaw", () => {
 		expect(tokenListSpy).not.toHaveBeenCalled();
 	});
 
+	it("rejects with AbortError without firing any upstream call when signal is pre-aborted", async () => {
+		const balanceSpy = vi.spyOn(userService, "getUserTotalBalanceRaw");
+		const tokenListSpy = vi.spyOn(userService, "getUserTokenListRaw");
+
+		const controller = new AbortController();
+		controller.abort();
+
+		await expect(
+			userService.getUserTokensAcrossChainsRaw(
+				{ id: WALLET },
+				{ signal: controller.signal },
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
+
+		expect(balanceSpy).not.toHaveBeenCalled();
+		expect(tokenListSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects mid-flight if the signal aborts between the balance call and the fan-out", async () => {
+		const controller = new AbortController();
+		// Simulate the abort firing the moment getUserTotalBalanceRaw resolves.
+		vi.spyOn(userService, "getUserTotalBalanceRaw").mockImplementation(
+			async () => {
+				controller.abort();
+				return {
+					total_usd_value: 10,
+					chain_list: [
+						{
+							id: "eth",
+							community_id: 1,
+							name: "Ethereum",
+							logo_url: "",
+							native_token_id: "eth",
+							wrapped_token_id: "",
+							usd_value: 10,
+						},
+					],
+				};
+			},
+		);
+		const tokenListSpy = vi.spyOn(userService, "getUserTokenListRaw");
+
+		await expect(
+			userService.getUserTokensAcrossChainsRaw(
+				{ id: WALLET },
+				{ signal: controller.signal },
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
+
+		// The mid-flight check must skip the parallel fan-out.
+		expect(tokenListSpy).not.toHaveBeenCalled();
+	});
+
 	it("survives a missing chain_list (treats as empty wallet)", async () => {
 		vi.spyOn(userService, "getUserTotalBalanceRaw").mockResolvedValue({
 			total_usd_value: 0,

@@ -260,12 +260,30 @@ export class UserService extends BaseService {
 		args: { id: string; min_usd_value?: number; is_all?: boolean },
 		options?: RequestOptions,
 	): Promise<UserTokenBalance[]> {
+		const throwIfAborted = () => {
+			if (options?.signal?.aborted) {
+				// Preserve the caller's reason (or fall back to a standard
+				// AbortError) so downstream `error.name === "AbortError"` checks
+				// in axios/fetch/retry libs still discriminate.
+				throw (
+					options.signal.reason ??
+					new DOMException("This operation was aborted", "AbortError")
+				);
+			}
+		};
+		// Check at entry — skip the cache lookup, the first upstream call, and
+		// the fan-out if the caller already cancelled.
+		throwIfAborted();
 		const minUsdValue = args.min_usd_value ?? 1;
 		try {
 			const portfolio = await this.getUserTotalBalanceRaw(
 				{ id: args.id },
 				options,
 			);
+			// Re-check between calls — avoids firing N parallel token_list
+			// requests when the caller aborted while we were waiting on the
+			// portfolio breakdown.
+			throwIfAborted();
 			const targetChains = (portfolio.chain_list ?? [])
 				.filter((c) => c.usd_value >= minUsdValue)
 				.map((c) => c.id);
@@ -280,6 +298,9 @@ export class UserService extends BaseService {
 			);
 			return lists.flat();
 		} catch (error) {
+			// Don't wrap an abort in a misleading "Failed to fetch…" log entry —
+			// surface it as-is so the AbortError contract reaches the caller.
+			if (options?.signal?.aborted) throw error;
 			throw logAndWrapError(
 				`Failed to fetch tokens across chains for user ${args.id}`,
 				error,
