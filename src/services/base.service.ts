@@ -58,12 +58,17 @@ async function timed<T>(
 //      Gateway's own cache — short-circuits the network entirely on hits.
 // Only GET is cached; POST changes state and is never memoised.
 //
-// Known limitation (tracked for the upcoming server-side-aggregate PR): the
-// underlying fetch inherits the AbortSignal of whichever caller arrived first.
-// If a coalesced peer aborts first, the shared fetch aborts and every other
-// coalesced caller fails too. In practice this requires two concurrent guest
-// calls for the same URL within ~5 s where the first one's execute scope
-// times out — narrow window, but a real correctness gap.
+// AbortSignal semantics: the shared underlying fetch runs against an internal
+// AbortController that's decoupled from any caller's signal. Each caller gets
+// a per-caller race wrapper, so:
+//   - Caller B aborting rejects B's returned promise immediately, but the
+//     underlying fetch keeps running for any coalesced peers.
+//   - Caller A aborting only affects A's wrapper; B's promise still resolves
+//     from the shared fetch.
+// We never abort the internal controller in the current implementation, so
+// even if all callers abort, the underlying fetch runs to completion (or
+// hits its axios timeout). That trades a small amount of wasted upstream
+// work for full correctness under coalescing.
 type CacheEntry<T = unknown> = {
 	expiresAt: number;
 	promise: Promise<T>;
@@ -71,26 +76,64 @@ type CacheEntry<T = unknown> = {
 };
 const getCache = new Map<string, CacheEntry>();
 
+function abortedReason(): Error {
+	return new Error("Request aborted by caller");
+}
+
+// Wrap a shared promise so a per-caller AbortSignal can reject the caller's
+// view without disturbing the shared promise or any other coalesced peer.
+function raceWithSignal<T>(
+	shared: Promise<T>,
+	signal: AbortSignal | undefined,
+): Promise<T> {
+	if (!signal) return shared;
+	if (signal.aborted) return Promise.reject(abortedReason());
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(abortedReason());
+		signal.addEventListener("abort", onAbort, { once: true });
+		shared.then(
+			(v) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(v);
+			},
+			(e) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(e);
+			},
+		);
+	});
+}
+
 async function cachedGet<T>(
 	url: string,
 	ttlSeconds: number,
 	route: "gateway" | "direct",
-	fn: () => Promise<T>,
+	fn: (internalSignal: AbortSignal) => Promise<T>,
+	callerSignal?: AbortSignal,
 ): Promise<T> {
-	if (ttlSeconds <= 0) return timed("GET", url, route, fn);
+	if (ttlSeconds <= 0) {
+		// Bypass cache + coalescing entirely. Use the caller's signal directly
+		// since there's no sharing — 1:1 caller→fetch.
+		return timed("GET", url, route, () =>
+			fn(callerSignal ?? new AbortController().signal),
+		);
+	}
 
 	const key = url;
 	const now = Date.now();
 	const existing = getCache.get(key) as CacheEntry<T> | undefined;
 	if (existing && existing.expiresAt > now) {
 		apiLogger.info(`op=GET route=${route} path=${pathOf(url)} cache=hit`);
-		return existing.promise;
+		return raceWithSignal(existing.promise, callerSignal);
 	}
 	// Expired entry about to be replaced — clear its pending timer to keep the
 	// Node timer wheel clean on high-churn URLs.
 	if (existing) clearTimeout(existing.timer);
 
-	const promise = timed("GET", url, route, fn);
+	// Internal controller for the shared fetch — decoupled from every caller
+	// so one caller's abort never cascades to coalesced peers.
+	const internalController = new AbortController();
+	const promise = timed("GET", url, route, () => fn(internalController.signal));
 	// Compare by `promise` identity inside the timer callback (not by entry
 	// reference) so we don't need a forward declaration. Functionally
 	// equivalent: a replaced entry has a different promise; a deleted entry
@@ -114,7 +157,7 @@ async function cachedGet<T>(
 			getCache.delete(key);
 		}
 	});
-	return promise;
+	return raceWithSignal(promise, callerSignal);
 }
 
 /**
@@ -133,10 +176,22 @@ export abstract class BaseService {
 	): Promise<T> {
 		const route: "gateway" | "direct" =
 			env.IQ_GATEWAY_URL && env.IQ_GATEWAY_KEY ? "gateway" : "direct";
-		return cachedGet<T>(url, cacheDuration, route, () =>
-			route === "gateway"
-				? this.fetchViaGateway<T>(url, cacheDuration, options)
-				: this.fetchDirect<T>(url, options),
+		return cachedGet<T>(
+			url,
+			cacheDuration,
+			route,
+			(internalSignal) => {
+				// Decouple the caller's signal from the underlying fetch so cross-
+				// caller abort interference is impossible under coalescing. Only
+				// override the signal if the caller had one, so unsignaled callers
+				// keep their "no signal at axios" behaviour (matches v0.1 parity).
+				const merged: RequestOptions = { ...(options ?? {}) };
+				if (options?.signal) merged.signal = internalSignal;
+				return route === "gateway"
+					? this.fetchViaGateway<T>(url, cacheDuration, merged)
+					: this.fetchDirect<T>(url, merged);
+			},
+			options?.signal,
 		);
 	}
 

@@ -79,7 +79,7 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("fetchWithToolConfig forwards signal + timeout to axios.get when default TTL is used", async () => {
+	it("fetchWithToolConfig forwards timeout + decoupled signal to axios.get (default TTL)", async () => {
 		const controller = new AbortController();
 		await svc.fetchDefaultTTL("https://example.test/x", {
 			signal: controller.signal,
@@ -90,11 +90,16 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 			signal?: AbortSignal;
 			timeout?: number;
 		};
-		expect(callOpts.signal).toBe(controller.signal);
+		// The underlying axios call runs with an internal signal — decoupled
+		// from the caller's so coalesced peers don't interfere with each other.
+		// The caller's signal still controls the returned promise (see the
+		// dedicated abort-behaviour test below).
+		expect(callOpts.signal).toBeDefined();
+		expect(callOpts.signal).not.toBe(controller.signal);
 		expect(callOpts.timeout).toBe(6_000);
 	});
 
-	it("fetchWithToolConfig with explicit TTL still forwards signal + timeout", async () => {
+	it("fetchWithToolConfig forwards timeout + decoupled signal (explicit TTL)", async () => {
 		const controller = new AbortController();
 		await svc.fetchCustomTTL("https://example.test/x", 60, {
 			signal: controller.signal,
@@ -105,8 +110,20 @@ describe("BaseService RequestOptions forwarding — direct path", () => {
 			signal?: AbortSignal;
 			timeout?: number;
 		};
-		expect(callOpts.signal).toBe(controller.signal);
+		expect(callOpts.signal).toBeDefined();
+		expect(callOpts.signal).not.toBe(controller.signal);
 		expect(callOpts.timeout).toBe(6_000);
+	});
+
+	it("caller abort rejects the returned promise even though axios sees a decoupled signal", async () => {
+		const controller = new AbortController();
+		// Make axios hang so the abort path is the only way the promise settles.
+		getSpy.mockReturnValueOnce(new Promise(() => {}) as never);
+		const p = svc.fetchDefaultTTL("https://example.test/abort", {
+			signal: controller.signal,
+		});
+		controller.abort();
+		await expect(p).rejects.toThrow(/aborted/i);
 	});
 
 	it("postWithToolConfig forwards signal + timeout to axios.post", async () => {
@@ -195,7 +212,7 @@ describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
 		delete process.env.IQ_GATEWAY_KEY;
 	});
 
-	it("fetchViaGateway forwards signal + timeout to axios.get", async () => {
+	it("fetchViaGateway forwards timeout + decoupled signal to axios.get", async () => {
 		const controller = new AbortController();
 		await svc.fetchDefaultTTL("https://pro-openapi.debank.com/v1/x", {
 			signal: controller.signal,
@@ -204,13 +221,15 @@ describe("BaseService RequestOptions forwarding — IQ Gateway path", () => {
 		expect(getSpy).toHaveBeenCalledTimes(1);
 		/**
 		 * We don't assert the URL shape here — that's gateway-routing behavior and
-		 * unchanged from v0.1. We assert the OPTIONS object.
+		 * unchanged from v0.1. We assert the OPTIONS object. Signal is now the
+		 * internal decoupled signal (see direct-path tests for rationale).
 		 */
 		const callOpts = getSpy.mock.calls[0]?.[1] as {
 			signal?: AbortSignal;
 			timeout?: number;
 		};
-		expect(callOpts.signal).toBe(controller.signal);
+		expect(callOpts.signal).toBeDefined();
+		expect(callOpts.signal).not.toBe(controller.signal);
 		expect(callOpts.timeout).toBe(6_000);
 	});
 
