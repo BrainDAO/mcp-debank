@@ -237,33 +237,51 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllTokenListRaw(
-		args: {
-			id: string;
-			is_all?: boolean;
-			has_balance?: boolean;
-		},
+	/**
+	 * Aggregate token holdings across every chain that holds value for the
+	 * wallet. Replaces the deprecated `/user/all_token_list` endpoint, which
+	 * DeBank's upstream cannot serve within our 5 s per-call wrapper timeout
+	 * for any active wallet (every attempt cancels at exactly 5000 ms).
+	 *
+	 * Algorithm:
+	 *   1. `getUserTotalBalanceRaw` returns `chain_list` with per-chain usd_value.
+	 *   2. Filter to chains with `usd_value >= min_usd_value` (default 1) so we
+	 *      skip the long tail of dust chains.
+	 *   3. `Promise.all(getUserTokenListRaw per filtered chain)` — runs against
+	 *      base.service's cache + coalescing layer, with each axios call carrying
+	 *      the same abort signal.
+	 *   4. Flatten. Each `UserTokenBalance` already carries its `chain` field.
+	 *
+	 * Wall-time for a whale with ~20 active chains is typically 3-6 s (concurrency
+	 * is bounded by axios + DeBank). The execute wrapper grants this method a
+	 * 30 s budget via the `timeoutMs` override in tool-metadata.
+	 */
+	async getUserTokensAcrossChainsRaw(
+		args: { id: string; min_usd_value?: number; is_all?: boolean },
 		options?: RequestOptions,
 	): Promise<UserTokenBalance[]> {
+		const minUsdValue = args.min_usd_value ?? 1;
 		try {
-			const params = new URLSearchParams({
-				id: args.id,
-				...(args.is_all !== undefined && {
-					is_all: args.is_all.toString(),
-				}),
-				...(args.has_balance !== undefined && {
-					has_balance: args.has_balance.toString(),
-				}),
-			});
-
-			return await this.fetchWithToolConfig<UserTokenBalance[]>(
-				`${this.baseUrl}/user/all_token_list?${params}`,
-				this.DEFAULT_CACHE_TTL_SECONDS,
+			const portfolio = await this.getUserTotalBalanceRaw(
+				{ id: args.id },
 				options,
 			);
+			const targetChains = (portfolio.chain_list ?? [])
+				.filter((c) => c.usd_value >= minUsdValue)
+				.map((c) => c.id);
+			if (targetChains.length === 0) return [];
+			const lists = await Promise.all(
+				targetChains.map((chain_id) =>
+					this.getUserTokenListRaw(
+						{ id: args.id, chain_id, is_all: args.is_all },
+						options,
+					),
+				),
+			);
+			return lists.flat();
 		} catch (error) {
 			throw logAndWrapError(
-				`Failed to fetch all token list for user ${args.id}`,
+				`Failed to fetch tokens across chains for user ${args.id}`,
 				error,
 			);
 		}

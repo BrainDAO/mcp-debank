@@ -294,8 +294,8 @@ export const UserTokenBalanceResponseSchema = UserTokenBalanceSchema;
 /** debank.user.getUserTokenList */
 export const UserTokenListSchema = z.array(UserTokenBalanceSchema);
 
-/** debank.user.getUserAllTokenList */
-export const UserAllTokenListSchema = z.array(UserTokenBalanceSchema);
+/** debank.user.getUserTokensAcrossChains — host-side fan-out replacement for the deprecated all_token_list endpoint. */
+export const UserTokensAcrossChainsSchema = z.array(UserTokenBalanceSchema);
 
 const UserNFTSchema = z.object({
 	id: z.string(),
