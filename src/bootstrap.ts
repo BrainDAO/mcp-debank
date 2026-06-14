@@ -11,19 +11,7 @@ const logger = createChildLogger("DeBank MCP");
 
 const require = createRequire(import.meta.url);
 
-type SemverString = `${number}.${number}.${number}`;
-function assertSemver(v: string): asserts v is SemverString {
-	if (!/^\d+\.\d+\.\d+$/.test(v)) {
-		throw new Error(
-			`package.json version "${v}" is not a major.minor.patch semver string`,
-		);
-	}
-}
-const { version: rawVersion } = require("../package.json") as {
-	version: string;
-};
-assertSemver(rawVersion);
-const version: SemverString = rawVersion;
+const { version } = require("../package.json") as { version: string };
 
 function dynamicToolsEnabled(): boolean {
 	if (process.env.DEBANK_MCP_TOOLS === "dynamic") return true;
@@ -34,7 +22,11 @@ function dynamicToolsEnabled(): boolean {
 async function main() {
 	const server = new FastMCP({
 		name: "DeBank MCP Server",
-		version,
+		// FastMCP's type is `${number}.${number}.${number}`, but at runtime it
+		// just stringifies the field for the MCP serverInfo response — so
+		// prerelease versions (e.g. `1.0.0-beta.0` from `changeset pre enter`)
+		// pass through fine. Cast instead of re-asserting at boot.
+		version: version as `${number}.${number}.${number}`,
 		instructions: INSTRUCTIONS,
 	});
 
