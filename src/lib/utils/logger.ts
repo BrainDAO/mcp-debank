@@ -42,8 +42,9 @@ export const createLogger = (options: LoggerOptions): winston.Logger => {
 		level = getLogLevelFromEnv(),
 		// Default to color only on a TTY. MCP hosts (Claude Desktop, etc.)
 		// capture stderr to a non-TTY log file, where ANSI escape codes would
-		// be written literally as `␛[32m`…`␛[39m` and clutter the file.
-		colorize = process.stderr.isTTY === true,
+		// be written literally as `␛[32m`…`␛[39m` and clutter the file. Optional
+		// chaining guards against test runners / bundlers that mock `process`.
+		colorize = process.stderr?.isTTY === true,
 		timestamp = true,
 	} = options;
 

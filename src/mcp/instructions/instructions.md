@@ -57,7 +57,9 @@ async function run(debank) {
   // The `chain_list` field on the response is the input to step 2 — there
   // is no need to also call getUsedChainList.
   const portfolio = await debank.user.getUserTotalBalance({ id: "0xWALLET" });
-  const targetChains = portfolio.chain_list
+  // `chain_list` may be undefined for brand-new / empty wallets — coalesce
+  // so the template doesn't throw on `.filter` for that edge case.
+  const targetChains = (portfolio.chain_list ?? [])
     .filter(c => c.usd_value >= 1)
     .map(c => c.id);
 
