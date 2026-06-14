@@ -307,11 +307,18 @@ export class UserService extends BaseService {
 					}),
 				),
 			);
+			// Final check: if the signal aborted after all per-chain calls
+			// settled but before we return, honour the abort contract instead
+			// of leaking data the caller already cancelled.
+			throwIfAborted();
 			return lists.flat();
 		} catch (error) {
-			// Don't wrap an abort in a misleading "Failed to fetch…" log entry —
-			// surface it as-is so the AbortError contract reaches the caller.
-			if (options?.signal?.aborted) throw error;
+			// When the signal is aborted, always surface the canonical
+			// AbortError (signal.reason or DOMException). A concurrent
+			// network error that bubbled into the catch shouldn't mask the
+			// fact that the caller cancelled — downstream
+			// `error.name === "AbortError"` checks rely on this.
+			throwIfAborted();
 			throw logAndWrapError(
 				`Failed to fetch tokens across chains for user ${args.id}`,
 				error,

@@ -181,6 +181,58 @@ describe("userService.getUserTokensAcrossChainsRaw", () => {
 		expect(result.map((t) => t.symbol)).toEqual(["USDC"]);
 	});
 
+	it("rejects with AbortError if signal aborts after fan-out resolves but before return", async () => {
+		const controller = new AbortController();
+		vi.spyOn(userService, "getUserTotalBalanceRaw").mockResolvedValue({
+			total_usd_value: 10,
+			chain_list: [
+				{
+					id: "eth",
+					community_id: 1,
+					name: "Ethereum",
+					logo_url: "",
+					native_token_id: "eth",
+					wrapped_token_id: "",
+					usd_value: 10,
+				},
+			],
+		});
+		// All per-chain calls resolve normally — abort happens between
+		// Promise.all settling and the function returning.
+		vi.spyOn(userService, "getUserTokenListRaw").mockImplementation(
+			async () => {
+				controller.abort();
+				return [token("USDC", "eth", 1, 1)];
+			},
+		);
+
+		await expect(
+			userService.getUserTokensAcrossChainsRaw(
+				{ id: WALLET },
+				{ signal: controller.signal },
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("surfaces AbortError (not the network error) when signal aborts concurrent with an upstream failure", async () => {
+		const controller = new AbortController();
+		vi.spyOn(userService, "getUserTotalBalanceRaw").mockImplementation(
+			async () => {
+				// Abort first, then throw a non-abort error — caller should see
+				// the AbortError, not the 503.
+				controller.abort();
+				throw Object.assign(new Error("DeBank 503"), { code: "ESERVERERR" });
+			},
+		);
+
+		await expect(
+			userService.getUserTokensAcrossChainsRaw(
+				{ id: WALLET },
+				{ signal: controller.signal },
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
+	});
+
 	it("propagates abort even when a per-chain rejection happens after the signal aborts", async () => {
 		const controller = new AbortController();
 		vi.spyOn(userService, "getUserTotalBalanceRaw").mockResolvedValue({
