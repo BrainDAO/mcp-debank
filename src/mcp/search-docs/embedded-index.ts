@@ -581,10 +581,10 @@ export const ENTRIES: IndexEntry[] = [
 	},
 	{
 		kind: "method",
-		name: "debank_get_user_all_token_list",
-		qualified: "debank.user.getUserAllTokenList",
+		name: "debank_get_user_tokens_across_chains",
+		qualified: "debank.user.getUserTokensAcrossChains",
 		description:
-			"Retrieve a user's token balances across all supported chains. Provides a comprehensive list of all tokens held by the user, offering insights into their wider cryptocurrency portfolio.",
+			"Retrieve a user's token balances across every chain that holds value. Host-side aggregate: discovers active chains via getUserTotalBalance, filters to those with usd_value >= min_usd_value (default 1), then fans out per-chain token_list calls in parallel. Replaces DeBank's /user/all_token_list endpoint, which cannot reliably serve active wallets within the 5 s per-call timeout. Returns a flat array of token balances; each token carries its `chain` field for grouping.",
 		params: {
 			$schema: "https://json-schema.org/draft/2020-12/schema",
 			type: "object",
@@ -593,16 +593,22 @@ export const ENTRIES: IndexEntry[] = [
 					description: "The user's wallet address.",
 					type: "string",
 				},
+				min_usd_value: {
+					description:
+						"Minimum per-chain USD value required for that chain to be queried. Default 1 — skips the long tail of dust chains. Pass 0 to query every chain the wallet has touched.",
+					type: "number",
+				},
 				is_all: {
 					description:
-						"If true, includes all tokens in the response. Default is true.",
+						"If true, includes non-core tokens in each per-chain response.",
 					type: "boolean",
 				},
 			},
 			required: ["id"],
 			additionalProperties: false,
 		},
-		exampleCall: "await debank.user.getUserAllTokenList({id: '0x...'})",
+		exampleCall:
+			"await debank.user.getUserTokensAcrossChains({id: '0x...', min_usd_value: 1})",
 	},
 	{
 		kind: "method",

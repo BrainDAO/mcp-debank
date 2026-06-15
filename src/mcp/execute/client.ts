@@ -115,8 +115,12 @@ async function installServiceCall(
 			args: unknown,
 			options: { signal: AbortSignal; timeout: number },
 		) => Promise<unknown>;
+		/** Per-method override of ABORT_MS for host-side aggregate methods. */
+		timeoutMs?: number;
 	},
 ): Promise<void> {
+	const abortMs = spec.timeoutMs ?? ABORT_MS;
+	const abortSeconds = Math.round(abortMs / 1000);
 	const [group, method] = parseQualified(spec.qualified);
 	const ref = new ivm.Reference(async (argsJson: string) => {
 		if (scope.controller.signal.aborted) {
@@ -156,8 +160,12 @@ async function installServiceCall(
 		const abortPromise = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				controller.abort();
-				reject(new Error(`DeBank call timed out after 5s: ${spec.qualified}`));
-			}, ABORT_MS);
+				reject(
+					new Error(
+						`DeBank call timed out after ${abortSeconds}s: ${spec.qualified}`,
+					),
+				);
+			}, abortMs);
 			timer.unref?.();
 		});
 		try {
@@ -183,7 +191,7 @@ async function installServiceCall(
 			let message: string;
 			if (
 				typeof e.message === "string" &&
-				e.message.startsWith("DeBank call timed out after 5s")
+				e.message.startsWith("DeBank call timed out after ")
 			) {
 				message = e.message;
 			} else if (scope.controller.signal.aborted) {
@@ -193,7 +201,7 @@ async function installServiceCall(
 				const isAxiosTimeout =
 					e.code === "ECONNABORTED" || e.code === "ETIMEDOUT";
 				if (isAbort || isAxiosTimeout) {
-					message = `DeBank call timed out after 5s: ${spec.qualified}`;
+					message = `DeBank call timed out after ${abortSeconds}s: ${spec.qualified}`;
 				} else {
 					message = e.message || String(err);
 				}
@@ -271,6 +279,7 @@ export async function installDebankClient(
 			qualified: m.qualified,
 			parameters: m.parameters,
 			rawFn,
+			timeoutMs: m.timeoutMs,
 		});
 	}
 

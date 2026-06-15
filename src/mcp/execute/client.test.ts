@@ -263,6 +263,50 @@ describe("execute/client.ts proxy forwarding", () => {
 		expect(msg).toBe("upstream 503");
 	});
 
+	it("per-method timeoutMs override surfaces in the timeout error message", async () => {
+		// getUserTokensAcrossChains has timeoutMs: 30_000 in tool-metadata, so
+		// an ECONNABORTED from one of its internal calls should surface as a
+		// 30s message (not the default 5s).
+		const servicesMod = await import("../../services/index.js");
+		const fakeAbort = Object.assign(new Error("timeout of 6000ms exceeded"), {
+			code: "ECONNABORTED",
+		});
+		vi.spyOn(
+			servicesMod.userService as unknown as {
+				getUserTokensAcrossChainsRaw: (...a: unknown[]) => Promise<unknown>;
+			},
+			"getUserTokensAcrossChainsRaw",
+		).mockRejectedValue(fakeAbort as never);
+
+		const mod = await import("isolated-vm");
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
+		isolate = new ivm.Isolate({ memoryLimit: 64 });
+		const ctx = await isolate.createContext();
+		await ctx.global.set(
+			"debank",
+			new ivm.ExternalCopy({}).copyInto({ release: true }),
+		);
+
+		const { installDebankClient } = await import("./client.js");
+		const { createExecutionScope } = await import("./scope.js");
+		await installDebankClient(ctx, createExecutionScope());
+
+		const script = await isolate.compileScript(
+			`(async () => {
+				try { await debank.user.getUserTokensAcrossChains({id:"0xabc"}); return "no-error"; }
+				catch (e) { return e.message; }
+			})()`,
+		);
+		const msg = await script.run(ctx, {
+			timeout: 5_000,
+			promise: true,
+			copy: true,
+		});
+		expect(msg).toBe(
+			"DeBank call timed out after 30s: debank.user.getUserTokensAcrossChains",
+		);
+	});
+
 	it("axios ECONNABORTED through *Raw → client surfaces canonical 5s timeout message", async () => {
 		/**
 		 * Simulate the failure mode the bot was concerned about: axios throws an

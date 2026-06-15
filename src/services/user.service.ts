@@ -237,33 +237,95 @@ export class UserService extends BaseService {
 		}
 	}
 
-	async getUserAllTokenListRaw(
-		args: {
-			id: string;
-			is_all?: boolean;
-			has_balance?: boolean;
-		},
+	/**
+	 * Aggregate token holdings across every chain that holds value for the
+	 * wallet. Replaces the deprecated `/user/all_token_list` endpoint, which
+	 * DeBank's upstream cannot serve within our 5 s per-call wrapper timeout
+	 * for any active wallet (every attempt cancels at exactly 5000 ms).
+	 *
+	 * Algorithm:
+	 *   1. `getUserTotalBalanceRaw` returns `chain_list` with per-chain usd_value.
+	 *   2. Filter to chains with `usd_value >= min_usd_value` (default 1) so we
+	 *      skip the long tail of dust chains.
+	 *   3. `Promise.all(getUserTokenListRaw per filtered chain)` — runs against
+	 *      base.service's cache + coalescing layer, with each axios call carrying
+	 *      the same abort signal.
+	 *   4. Flatten. Each `UserTokenBalance` already carries its `chain` field.
+	 *
+	 * Wall-time for a whale with ~20 active chains is typically 3-6 s (concurrency
+	 * is bounded by axios + DeBank). The execute wrapper grants this method a
+	 * 30 s budget via the `timeoutMs` override in tool-metadata.
+	 */
+	async getUserTokensAcrossChainsRaw(
+		args: { id: string; min_usd_value?: number; is_all?: boolean },
 		options?: RequestOptions,
 	): Promise<UserTokenBalance[]> {
+		const throwIfAborted = () => {
+			if (options?.signal?.aborted) {
+				// Preserve the caller's reason (or fall back to a standard
+				// AbortError) so downstream `error.name === "AbortError"` checks
+				// in axios/fetch/retry libs still discriminate.
+				throw (
+					options.signal.reason ??
+					new DOMException("This operation was aborted", "AbortError")
+				);
+			}
+		};
+		// Check at entry — skip the cache lookup, the first upstream call, and
+		// the fan-out if the caller already cancelled.
+		throwIfAborted();
+		const minUsdValue = args.min_usd_value ?? 1;
 		try {
-			const params = new URLSearchParams({
-				id: args.id,
-				...(args.is_all !== undefined && {
-					is_all: args.is_all.toString(),
-				}),
-				...(args.has_balance !== undefined && {
-					has_balance: args.has_balance.toString(),
-				}),
-			});
-
-			return await this.fetchWithToolConfig<UserTokenBalance[]>(
-				`${this.baseUrl}/user/all_token_list?${params}`,
-				this.DEFAULT_CACHE_TTL_SECONDS,
+			const portfolio = await this.getUserTotalBalanceRaw(
+				{ id: args.id },
 				options,
 			);
+			// Re-check between calls — avoids firing N parallel token_list
+			// requests when the caller aborted while we were waiting on the
+			// portfolio breakdown.
+			throwIfAborted();
+			// Defensive optional chaining at the API boundary — the typed
+			// signature promises non-null UserTotalBalance, but axios will
+			// hand us whatever the upstream actually returned. Also require
+			// `c.id` so we never feed `chain_id: undefined` into a wasted
+			// per-chain fetch.
+			const targetChains = (portfolio?.chain_list ?? [])
+				.filter((c) => c?.id && c.usd_value >= minUsdValue)
+				.map((c) => c.id);
+			if (targetChains.length === 0) return [];
+			// Per-chain `.catch` so a single chain's transient failure (rate
+			// limit, 5xx, axios timeout, etc.) doesn't fail the whole aggregate
+			// — the user gets the chains that succeeded. Abort errors are still
+			// propagated so cancellation is honoured for the whole batch.
+			const lists = await Promise.all(
+				targetChains.map((chain_id) =>
+					this.getUserTokenListRaw(
+						{ id: args.id, chain_id, is_all: args.is_all },
+						options,
+					).catch((err) => {
+						if (options?.signal?.aborted) throw err;
+						logger.warn(
+							`Skipping chain ${chain_id} for user ${args.id} due to upstream error`,
+							err as Error,
+						);
+						return [] as UserTokenBalance[];
+					}),
+				),
+			);
+			// Final check: if the signal aborted after all per-chain calls
+			// settled but before we return, honour the abort contract instead
+			// of leaking data the caller already cancelled.
+			throwIfAborted();
+			return lists.flat();
 		} catch (error) {
+			// When the signal is aborted, always surface the canonical
+			// AbortError (signal.reason or DOMException). A concurrent
+			// network error that bubbled into the catch shouldn't mask the
+			// fact that the caller cancelled — downstream
+			// `error.name === "AbortError"` checks rely on this.
+			throwIfAborted();
 			throw logAndWrapError(
-				`Failed to fetch all token list for user ${args.id}`,
+				`Failed to fetch tokens across chains for user ${args.id}`,
 				error,
 			);
 		}
