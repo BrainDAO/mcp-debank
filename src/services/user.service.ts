@@ -284,8 +284,11 @@ export class UserService extends BaseService {
 			// requests when the caller aborted while we were waiting on the
 			// portfolio breakdown.
 			throwIfAborted();
-			const targetChains = (portfolio.chain_list ?? [])
-				.filter((c) => c.usd_value >= minUsdValue)
+			// Defensive optional chaining at the API boundary — the typed
+			// signature promises non-null UserTotalBalance, but axios will
+			// hand us whatever the upstream actually returned.
+			const targetChains = (portfolio?.chain_list ?? [])
+				.filter((c) => c?.usd_value >= minUsdValue)
 				.map((c) => c.id);
 			if (targetChains.length === 0) return [];
 			// Per-chain `.catch` so a single chain's transient failure (rate
