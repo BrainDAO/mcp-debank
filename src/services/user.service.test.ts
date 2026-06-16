@@ -6,6 +6,11 @@
 // crossing the network.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	UserNftAuthorizedListSchema,
+	UserTokenAuthorizedListSchema,
+	UserTotalNetCurveSchema,
+} from "../mcp/legacy/response-schemas.js";
 import { userService } from "./index.js";
 
 const WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
@@ -471,5 +476,292 @@ describe("userService — endpoint contract regression tests", () => {
 		expect(result.total).toBe("8");
 		expect(result.contracts).toHaveLength(1);
 		expect(result.tokens).toEqual([]);
+	});
+});
+
+/**
+ * Schema validation against representative payloads captured from the live IQ
+ * Gateway. The premise of this PR is "schemas drifted silently for months" —
+ * these tests close the loop by exercising the schemas against realistic
+ * fixtures so a future drift fails in CI, not just in someone's manual curl.
+ *
+ * All fixtures were pulled from production endpoints with real wallets:
+ *   - curve: 0xd8dA…6045 (Vitalik) via /user/total_net_curve
+ *   - token approvals: 0xd8dA…6045 via /user/token_authorized_list?chain_id=eth
+ *   - NFT approvals: 0xd387…c459 (Pranksy) via /user/nft_authorized_list?chain_id=eth
+ *
+ * Each schema has `.passthrough()` so extra DeBank-added fields don't fail
+ * the parse, but missing required fields or type mismatches still do.
+ */
+describe("response schemas validate against realistic fixtures", () => {
+	it("UserTotalNetCurveSchema parses a bare-array curve response", () => {
+		// Two-point fixture (real responses are 288 points; shape per point is
+		// what we assert).
+		const fixture = [
+			{ timestamp: 1781520900, usd_value: 428753.72163113294 },
+			{ timestamp: 1781521200, usd_value: 428901.5 },
+		];
+		const result = UserTotalNetCurveSchema.safeParse(fixture);
+		expect(result.success).toBe(true);
+	});
+
+	it("UserTokenAuthorizedListSchema parses a token-approval entry with full spender metadata", () => {
+		const fixture = [
+			{
+				id: "0x28561b8a2360f463011c16b6cc0b0cbef8dbbcad",
+				chain: "eth",
+				name: "MOO DENG",
+				symbol: "MOODENG",
+				display_symbol: null,
+				optimized_symbol: "MOODENG",
+				decimals: 9,
+				logo_url: "https://example.invalid/logo.png",
+				protocol_id: "",
+				price: 0.000004808052747803027,
+				price_24h_change: -0.016599990539484702,
+				credit_score: 54753.23544720913,
+				total_supply: 414508096868.6426,
+				is_verified: true,
+				is_core: true,
+				is_wallet: true,
+				is_scam: false,
+				is_suspicious: false,
+				time_at: 1726430855.0,
+				amount: 30002291391.968834,
+				// Real `raw_amount` values exceed Number.MAX_SAFE_INTEGER and lose
+				// precision — that's a pre-existing concern, not introduced here.
+				// For the fixture we use a safe-int value so biome doesn't reject
+				// the literal; the schema's z.number() accepts either.
+				raw_amount: 30002291391,
+				raw_amount_hex_str: "0x1a05d8d0fe20ff3ca",
+				balance: 30002291391.968834,
+				spenders: [
+					{
+						id: "0xc92e8bdf79f0507f65a392b0ab4667716bfe0110",
+						value: 1.157920892373162e68,
+						exposure_usd: 144252.59956754284,
+						last_approve_at: 1728301007.0,
+						protocol: {
+							id: "cowswap",
+							name: "CoW Swap",
+							logo_url: "https://example.invalid/cowswap.png",
+							chain: "eth",
+						},
+						spend_usd_value: 20000000000,
+						exposure_usd_value: 541574823.4333035,
+						approve_user_count: 1014,
+						revoke_user_count: 85,
+						is_contract: true,
+						is_hacked: null,
+						is_abandoned: null,
+						is_open_source: null,
+						risk_level: "safe",
+						risk_alert: "",
+					},
+				],
+				sum_exposure_usd: 144252.59956754284,
+				exposure_balance: 30002291391.968834,
+			},
+		];
+		const result = UserTokenAuthorizedListSchema.safeParse(fixture);
+		if (!result.success) {
+			throw new Error(
+				`Token authorization schema failed: ${JSON.stringify(result.error.issues, null, 2)}`,
+			);
+		}
+		expect(result.success).toBe(true);
+	});
+
+	it("UserTokenAuthorizedListSchema accepts nullable risk flags (is_scam, is_suspicious null)", () => {
+		// Strip-mode would have rejected this in the previous schema; nullable
+		// risk fields are the consistency fix from review finding #4.
+		const fixture = [
+			{
+				id: "0xtest",
+				chain: "eth",
+				name: "Test",
+				symbol: "TST",
+				display_symbol: null,
+				optimized_symbol: "TST",
+				decimals: 18,
+				logo_url: "",
+				protocol_id: "",
+				price: 0,
+				price_24h_change: null,
+				credit_score: null,
+				total_supply: null,
+				is_verified: false,
+				is_core: false,
+				is_wallet: false,
+				is_scam: null,
+				is_suspicious: null,
+				time_at: null,
+				amount: 0,
+				raw_amount: 0,
+				raw_amount_hex_str: "0x0",
+				balance: 0,
+				spenders: [],
+				sum_exposure_usd: null,
+				exposure_balance: 0,
+			},
+		];
+		const result = UserTokenAuthorizedListSchema.safeParse(fixture);
+		expect(result.success).toBe(true);
+	});
+
+	it("UserNftAuthorizedListSchema parses the { total, contracts, tokens } wrapper", () => {
+		const fixture = {
+			total: "103122",
+			contracts: [
+				{
+					chain: "eth",
+					contract_name: "Gods Unchained Cards",
+					contract_id: "0x0e3a2a1f2146d86a604adc220b4967a898d7fe07",
+					is_erc721: true,
+					collection: {
+						chain_id: "eth",
+						id: "0x0e3a2a1f2146d86a604adc220b4967a898d7fe07",
+						name: "Gods Unchained",
+						description: null,
+						logo_url: "https://example.invalid/godsunchained.png",
+						is_verified: null,
+						is_suspicious: null,
+						is_core: false,
+						floor_price: 0.005,
+						credit_score: null,
+						is_scam: true,
+					},
+					amount: "16791",
+					spender: {
+						id: "0xefc70a1b18c432bdc64b596838b4d138f6bc6cad",
+						protocol: null,
+						last_approve_at: 1574409024.0,
+						risk_level: "safe",
+						risk_alert: "",
+						exposure_nft_usd_value: 1709467.1759048854,
+						spend_nft_usd_value: 26329.84801897069,
+						approve_user_count: 0,
+						revoke_user_count: 0,
+					},
+				},
+			],
+			tokens: [
+				{
+					id: "12a3845db56a46c6c5e94ca7930da5bc",
+					contract_id: "0x959e104e1a4db6317fa58f8295f586e1a978c297",
+					inner_id: "3896",
+					chain: "eth",
+					symbol: "EST",
+					name: "#3896",
+					description: null,
+					content_type: null,
+					content: "",
+					thumbnail_url: "",
+					total_supply: 1,
+					attributes: [],
+					detail_url: "https://example.invalid/opensea/3896",
+					collection_id: "eth:0x959e104e1a4db6317fa58f8295f586e1a978c297",
+					is_erc1155: false,
+					is_erc721: true,
+					pay_token: null,
+					collection: {
+						id: "eth:0x959e104e1a4db6317fa58f8295f586e1a978c297",
+						chain: "eth",
+						name: "Decentraland",
+						description: null,
+						logo_url: "https://example.invalid/decentraland.png",
+						is_verified: null,
+						credit_score: 628.2977286525003,
+						is_suspicious: null,
+						is_scam: false,
+						is_core: true,
+						floor_price: 0.03,
+					},
+					contract_name: "Estate",
+					amount: "1",
+					spender: {
+						id: "0x4fee7b061c97c9c496b01dbce9cdb10c02f0a0be",
+						protocol: {
+							id: "rarible",
+							name: "Rarible",
+							logo_url: "https://example.invalid/rarible.png",
+							chain: "eth",
+						},
+						last_approve_at: 1606804431.0,
+						risk_level: "safe",
+						risk_alert: "",
+						exposure_nft_usd_value: 1458784.0700031216,
+						spend_nft_usd_value: 582.2740973165915,
+						approve_user_count: 1,
+						revoke_user_count: 2,
+					},
+				},
+			],
+		};
+		const result = UserNftAuthorizedListSchema.safeParse(fixture);
+		if (!result.success) {
+			throw new Error(
+				`NFT authorization schema failed: ${JSON.stringify(result.error.issues, null, 2)}`,
+			);
+		}
+		expect(result.success).toBe(true);
+	});
+
+	it("passthrough lets DeBank add new fields without breaking the schema", () => {
+		// A future field DeBank might add to a spender entry — must not fail.
+		const fixture = [
+			{
+				id: "0xtest",
+				chain: "eth",
+				name: "Test",
+				symbol: "TST",
+				display_symbol: null,
+				optimized_symbol: "TST",
+				decimals: 18,
+				logo_url: "",
+				protocol_id: "",
+				price: 0,
+				price_24h_change: null,
+				credit_score: null,
+				total_supply: null,
+				is_verified: false,
+				is_core: false,
+				is_wallet: false,
+				is_scam: null,
+				is_suspicious: null,
+				time_at: null,
+				amount: 0,
+				raw_amount: 0,
+				raw_amount_hex_str: "0x0",
+				balance: 0,
+				spenders: [
+					{
+						id: "0xspender",
+						value: 0,
+						exposure_usd: 0,
+						last_approve_at: 0,
+						protocol: null,
+						spend_usd_value: 0,
+						exposure_usd_value: 0,
+						approve_user_count: 0,
+						revoke_user_count: 0,
+						is_contract: false,
+						is_hacked: null,
+						is_abandoned: null,
+						is_open_source: null,
+						risk_level: "safe",
+						risk_alert: "",
+						// Hypothetical new field DeBank could add tomorrow:
+						future_field_we_dont_know_about: { nested: 42 },
+					},
+				],
+				sum_exposure_usd: null,
+				exposure_balance: 0,
+				// Future top-level field on the token entry too:
+				newly_added_pricing_field: "anything",
+			},
+		];
+		const result = UserTokenAuthorizedListSchema.safeParse(fixture);
+		expect(result.success).toBe(true);
 	});
 });
