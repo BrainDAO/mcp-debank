@@ -1,5 +1,42 @@
 # @iqai/mcp-debank
 
+## 2.0.0
+
+### Major Changes
+
+- b9f49cf: Add `debank.user.getUserTokensAcrossChains` aggregate and remove the broken `getUserAllTokenList` (#16).
+
+  `/user/all_token_list` was structurally unservable for any active wallet — DeBank's upstream cannot return within the 5 s per-call wrapper timeout, and soft instructions could not stop the agent from inventing a "3-call limit per invocation" rule and degrading queries to 14-minute round trips.
+
+  The new `getUserTokensAcrossChainsRaw` does the fan-out inside the service layer:
+
+  1. `getUserTotalBalanceRaw` → discover active chains.
+  2. Filter to chains with `usd_value >= min_usd_value` (default 1).
+  3. `Promise.all(getUserTokenListRaw per filtered chain)` with per-chain `.catch` so a single chain's failure degrades the aggregate to best-effort instead of failing entirely.
+
+  Wall-time on a whale wallet (~30 active chains): **~6 s** (down from 2-14 minutes). The aggregate gets a per-method `timeoutMs: 30_000` override (new `ToolMetadata.timeoutMs` field) so the wrapper doesn't cancel it at 5 s.
+
+  **Breaking change**: `debank.user.getUserAllTokenList` is no longer registered. Anyone calling it gets `Invalid arguments` from Zod or an undefined property error — the recommended replacement is `getUserTokensAcrossChains`, which is faster for every wallet size.
+
+### Minor Changes
+
+- b9f49cf: Add request coalescing, an in-process GET cache, and per-call latency instrumentation to `BaseService` (#15). Three coordinated changes:
+
+  - **Coalescing**: concurrent callers for the same URL now share one underlying promise instead of firing duplicate axios requests. Critical when a guest `Promise.all`s identical lookups.
+  - **TTL cache**: identical lookups within `cacheDuration` skip the gateway hop entirely; emits `cache=hit` in the log. Layered on top of IQ Gateway's own cache. POSTs are never cached. Failed promises and expired entries are evicted with proper timer cleanup.
+  - **Instrumentation**: every upstream GET/POST emits one stderr line `[DeBank API] info: op=… route=… path=… ms=… ok=…` — enables identifying slow endpoints from real session traces.
+
+  The cache layer uses an internal `AbortController` per shared fetch (decoupled from any caller's signal) so one caller's abort cannot cascade to coalesced peers. Each caller gets a per-caller race wrapper for their own signal, preserving the standard `AbortError` contract (including `signal.reason` propagation). Logger also gates ANSI colorization on `process.stderr?.isTTY` so MCP host log files stay clean.
+
+### Patch Changes
+
+- b9f49cf: Drop the unused `zod-to-json-schema` devDependency (#14). The codebase migrated to Zod v4's native `z.toJSONSchema()` API; the legacy package had zero references in `src/`, `scripts/`, or `tests/`. Remains in the lockfile as a transitive of `xsschema` (pulled in by `@iqai/adk`), which is unchanged.
+- b9f49cf: Enforce the Node engine version at process startup (#13). MCP hosts (Claude Desktop, etc.) often spawn `node` from a non-interactive shell that picks whichever Node sits first on PATH — frequently an old nvm default. On Node < 20, `undici` v7 crashes during module evaluation with an opaque `ReferenceError: File is not defined`, leaving operators to debug a cryptic stack trace.
+
+  The bin entry is now a thin shim (`src/index.ts`) that checks `process.versions.node` against the required major **before** any static import of `fastmcp`/`undici` runs. On older Node, it emits a clear `[debank-mcp] Node v… is too old — set the "command" field to an absolute path to a Node 22+ binary` diagnostic and exits with code 1. Bootstrap is dynamic-imported only after the version gate passes.
+
+- b9f49cf: Rename `IQAICOM` / `IQAIcom` references to `IQOfficial` to match the new GitHub org handle (#20). No functional change; aligns repo URLs and contributor references with the canonical org name.
+
 ## 1.0.0
 
 ### Major Changes
