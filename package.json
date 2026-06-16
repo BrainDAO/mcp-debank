@@ -75,12 +75,12 @@
 			"biome check --write --no-errors-on-unmatched"
 		]
 	},
-	"homepage": "https://github.com/IQAIcom/mcp-debank#readme",
+	"homepage": "https://github.com/IQOfficial/mcp-debank#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/IQAIcom/mcp-debank.git"
+		"url": "git+https://github.com/IQOfficial/mcp-debank.git"
 	},
 	"bugs": {
-		"url": "https://github.com/IQAIcom/mcp-debank/issues"
+		"url": "https://github.com/IQOfficial/mcp-debank/issues"
 	}
 }

@@ -38,7 +38,7 @@ pnpm dlx @iqai/mcp-debank
 ### 🔧 Build from Source
 
 ```bash
-git clone https://github.com/IQAIcom/mcp-debank.git
+git clone https://github.com/IQOfficial/mcp-debank.git
 cd mcp-debank
 pnpm install
 pnpm run build
