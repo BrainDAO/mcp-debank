@@ -150,6 +150,14 @@ async function run(debank) {
 
 If unsure, call `debank_resolve` or `await debank.resolveChain("...")` inside `execute()`.
 
+## Protocol & token IDs — discover, don't guess
+
+DeBank's `protocol_id` and `token_id` slugs are NOT derived from the human-facing name. "Aave V3" is `aave3` on Ethereum, `arb_aave3` on Arbitrum — never `aave_v3`, `aave-v3`, or `aave/v3`. "Uniswap V3" is `uniswap3`, not `uniswap_v3`. The `token_id` is always a contract address (e.g. `0xdac17f958d2ee523a2206206994597c13d831ec7`), not a ticker symbol.
+
+**Before invoking any method that takes a `protocol_id` or `token_id`, look it up. Don't guess from the user's phrasing.** Guessing wastes calls against the per-execute budget and the user-visible wall time.
+
+For protocols, use `getProtocolList({chain_id})` (per-chain) or `getAllProtocolsOfSupportedChains({chain_ids})` (cross-chain) and filter by `name`. For tokens, ask the user for the contract address, or use `resolveWrappedToken(keyword, chain_id)` for the wrapped-native special cases. The `find-protocol-id` recipe via `search_docs` walks through the canonical pattern.
+
 ## Wrapped token keywords
 
 The `debank.resolveWrappedToken(keyword, chain_id)` helper converts the keywords `"WETH"`, `"wrapped native"`, and `"native token"` to the chain's wrapped-token address. **You must call it explicitly** — passing one of those strings directly as a `token_id` or `id` argument inside a `debank.*` call will NOT auto-resolve. Example:
