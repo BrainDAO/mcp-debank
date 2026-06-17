@@ -624,6 +624,12 @@ export const TOOL_METADATA: ToolMetadata[] = [
 		}),
 		responseSchema: UserAllNftListSchema,
 		exampleCall: "await debank.user.getUserAllNftList({id: '0x...'})",
+		// DeBank's `/user/all_nft_list` aggregates across every chain server-side
+		// and can take 10-30 s for active wallets (vs. ~1.5 s for the per-chain
+		// `/user/nft_list`). The default 5 s wrapper rejects these legitimately
+		// in-flight responses. 30 s matches the script deadline so the agent's
+		// execute call doesn't outlive its budget waiting on a single fetch.
+		timeoutMs: 30_000,
 	},
 	{
 		name: "debank_get_user_history_list",

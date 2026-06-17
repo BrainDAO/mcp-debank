@@ -22,7 +22,13 @@ import {
 } from "./scope.js";
 
 const ABORT_MS = 5_000;
-const AXIOS_MS = 6_000;
+// Axios timeout is always `AXIOS_BUFFER_MS` longer than the wrapper abort so
+// the wrapper fires first (giving us a clean canonical "DeBank call timed out
+// after Ns" message) while axios remains the safety net. When a method
+// overrides `timeoutMs`, the axios timeout must scale with it — otherwise
+// the axios call rejects at the default 6 s while the wrapper still has
+// budget, rendering the override a no-op for direct (non-aggregate) methods.
+const AXIOS_BUFFER_MS = 1_000;
 
 type Envelope = { ok: true; data: unknown } | { ok: false; error: string };
 
@@ -120,6 +126,7 @@ async function installServiceCall(
 	},
 ): Promise<void> {
 	const abortMs = spec.timeoutMs ?? ABORT_MS;
+	const axiosMs = abortMs + AXIOS_BUFFER_MS;
 	const abortSeconds = Math.round(abortMs / 1000);
 	const [group, method] = parseQualified(spec.qualified);
 	const ref = new ivm.Reference(async (argsJson: string) => {
@@ -181,7 +188,7 @@ async function installServiceCall(
 			const result = await Promise.race([
 				spec.rawFn(parsed.data, {
 					signal: controller.signal,
-					timeout: AXIOS_MS,
+					timeout: axiosMs,
 				}),
 				abortPromise,
 			]);
