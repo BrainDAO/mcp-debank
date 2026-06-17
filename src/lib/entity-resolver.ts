@@ -133,7 +133,7 @@ export async function resolveChains(
 			return null;
 		}
 		const result = resolved.join(",");
-		logger.info(`Resolved chains "${commaSeparated}" -> "${result}"`);
+		logger.debug(`Resolved chains "${commaSeparated}" -> "${result}"`);
 		return result;
 	} catch (error) {
 		logger.error(
@@ -176,7 +176,7 @@ export function resolveWrappedToken(
 			return null;
 		}
 
-		logger.info(
+		logger.debug(
 			`Resolved wrapped token "${tokenKeyword}" on ${chain.name} -> "${chain.wrappedTokenId}"`,
 		);
 		return chain.wrappedTokenId;

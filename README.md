@@ -91,6 +91,7 @@ You must provide **either** `DEBANK_API_KEY` **or** the `IQ_GATEWAY_URL` + `IQ_G
 | `IQ_GATEWAY_URL` | other path | IQ Gateway base URL. When set together with `IQ_GATEWAY_KEY`, all DeBank calls are proxied through the gateway. | - |
 | `IQ_GATEWAY_KEY` | other path | IQ Gateway API key. Sent as the `x-api-key` header to the gateway. | - |
 | `DEBANK_MCP_TOOLS` | No | Set to `dynamic` to register the four additional tools (`debank_resolve`, `list_endpoints`, `get_endpoint_schema`, `invoke_endpoint`) alongside the default `execute` + `search_docs`. Equivalent to passing `--tools=dynamic` on the command line. | - |
+| `LOG_LEVEL` | No | One of `error`, `warn`, `info`, `debug`. `debug` surfaces per-call API instrumentation (`[DeBank API] op=... ms=... ok=...`) and entity-resolver traces — useful when diagnosing slow endpoints, otherwise silent. `info` (default) keeps logs quiet: only startup events, real warnings, and errors. | `info` |
 
 ## 🖼️ Screenshots
 
