@@ -264,10 +264,10 @@ describe("execute/client.ts proxy forwarding", () => {
 	});
 
 	it("per-method timeoutMs scales the axios timeout, not just the wrapper", async () => {
-		// Direct (non-aggregate) methods with `timeoutMs: 30_000` need the
+		// Direct (non-aggregate) methods with a `timeoutMs` override need the
 		// underlying axios `timeout` option to scale too — otherwise axios
 		// rejects at the default 6 s and the override is a no-op.
-		// `getUserAllNftList` carries timeoutMs: 30_000 in tool-metadata.
+		// `getUserAllNftList` carries timeoutMs: 20_000 in tool-metadata.
 		const servicesMod = await import("../../services/index.js");
 		const rawSpy = vi
 			.spyOn(
@@ -298,9 +298,9 @@ describe("execute/client.ts proxy forwarding", () => {
 
 		expect(rawSpy).toHaveBeenCalledTimes(1);
 		const opts = rawSpy.mock.calls[0]?.[1] as { timeout?: number };
-		// timeoutMs: 30_000 → axios timeout = 31_000 (= abortMs + AXIOS_BUFFER_MS).
+		// timeoutMs: 20_000 → axios timeout = 21_000 (= abortMs + AXIOS_BUFFER_MS).
 		// Was 6_000 before the fix.
-		expect(opts.timeout).toBe(31_000);
+		expect(opts.timeout).toBe(21_000);
 	});
 
 	it("default methods still get the unchanged axios timeout (5s wrapper + 1s buffer = 6s)", async () => {
