@@ -123,7 +123,8 @@ async function run(debank) {
 
 \`\`\`js
 async function run(debank) {
-  return await debank.user.getUserProtocol({ id: "0xWALLET", protocol_id: "uniswap" });
+  // protocol_id is a DeBank slug — discover it first (see "Protocol & token IDs" below).
+  return await debank.user.getUserProtocol({ id: "0xWALLET", protocol_id: "<discovered_protocol_id>" });
 }
 \`\`\`
 
@@ -155,11 +156,11 @@ If unsure, call \`debank_resolve\` or \`await debank.resolveChain("...")\` insid
 
 ## Protocol & token IDs — discover, don't guess
 
-DeBank's \`protocol_id\` and \`token_id\` slugs are NOT derived from the human-facing name. "Aave V3" is \`aave3\` on Ethereum, \`arb_aave3\` on Arbitrum — never \`aave_v3\`, \`aave-v3\`, or \`aave/v3\`. "Uniswap V3" is \`uniswap3\`, not \`uniswap_v3\`. The \`token_id\` is always a contract address (e.g. \`0xdac17f958d2ee523a2206206994597c13d831ec7\`), not a ticker symbol.
+DeBank's \`protocol_id\` slugs are NOT derivable from the human-facing name. Versions, separators, and chain prefixes vary unpredictably between protocols — you cannot translate "Protocol V3" into a slug by intuition, and trying variants until one stops returning 404 wastes calls against the per-execute budget. The \`token_id\` is always a contract address, not a ticker symbol.
 
-**Before invoking any method that takes a \`protocol_id\` or \`token_id\`, look it up. Don't guess from the user's phrasing.** Guessing wastes calls against the per-execute budget and the user-visible wall time.
+**Before invoking any method that takes a \`protocol_id\` or \`token_id\`, look it up. Don't guess from the user's phrasing.**
 
-For protocols, use \`getProtocolList({chain_id})\` (per-chain) or \`getAllProtocolsOfSupportedChains({chain_ids})\` (cross-chain) and filter by \`name\`. For tokens, ask the user for the contract address, or use \`resolveWrappedToken(keyword, chain_id)\` for the wrapped-native special cases. The \`find-protocol-id\` recipe via \`search_docs\` walks through the canonical pattern.
+For protocols, use \`getProtocolList({chain_id})\` (per-chain) or \`getAllProtocolsOfSupportedChains({chain_ids})\` (cross-chain) and filter the result by \`name\`. For tokens, ask the user for the contract address, or use \`resolveWrappedToken(keyword, chain_id)\` for the wrapped-native special cases. The \`find-protocol-id\` recipe via \`search_docs\` walks through the canonical discovery pattern with concrete examples.
 
 ## Wrapped token keywords
 
