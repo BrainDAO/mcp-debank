@@ -263,6 +263,81 @@ describe("execute/client.ts proxy forwarding", () => {
 		expect(msg).toBe("upstream 503");
 	});
 
+	it("per-method timeoutMs scales the axios timeout, not just the wrapper", async () => {
+		// Direct (non-aggregate) methods with a `timeoutMs` override need the
+		// underlying axios `timeout` option to scale too — otherwise axios
+		// rejects at the default 6 s and the override is a no-op.
+		// `getUserAllNftList` carries timeoutMs: 20_000 in tool-metadata.
+		const servicesMod = await import("../../services/index.js");
+		const rawSpy = vi
+			.spyOn(
+				servicesMod.userService as unknown as {
+					getUserAllNftListRaw: (...a: unknown[]) => Promise<unknown>;
+				},
+				"getUserAllNftListRaw",
+			)
+			.mockResolvedValue([] as never);
+
+		const mod = await import("isolated-vm");
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
+		isolate = new ivm.Isolate({ memoryLimit: 64 });
+		const ctx = await isolate.createContext();
+		await ctx.global.set(
+			"debank",
+			new ivm.ExternalCopy({}).copyInto({ release: true }),
+		);
+
+		const { installDebankClient } = await import("./client.js");
+		const { createExecutionScope } = await import("./scope.js");
+		await installDebankClient(ctx, createExecutionScope());
+
+		const script = await isolate.compileScript(
+			`(async () => { return await debank.user.getUserAllNftList({id:"0xabc"}); })()`,
+		);
+		await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+
+		expect(rawSpy).toHaveBeenCalledTimes(1);
+		const opts = rawSpy.mock.calls[0]?.[1] as { timeout?: number };
+		// timeoutMs: 20_000 → axios timeout = 21_000 (= abortMs + AXIOS_BUFFER_MS).
+		// Was 6_000 before the fix.
+		expect(opts.timeout).toBe(21_000);
+	});
+
+	it("default methods still get the unchanged axios timeout (5s wrapper + 1s buffer = 6s)", async () => {
+		// Regression guard for the AXIOS_MS refactor — methods without a
+		// timeoutMs override must still see exactly 6_000ms as before.
+		const servicesMod = await import("../../services/index.js");
+		const rawSpy = vi
+			.spyOn(
+				servicesMod.userService as unknown as {
+					getUserChainBalanceRaw: (...a: unknown[]) => Promise<unknown>;
+				},
+				"getUserChainBalanceRaw",
+			)
+			.mockResolvedValue({ usd_value: 42 } as never);
+
+		const mod = await import("isolated-vm");
+		const ivm = (mod as unknown as { default?: typeof IVM }).default ?? mod;
+		isolate = new ivm.Isolate({ memoryLimit: 64 });
+		const ctx = await isolate.createContext();
+		await ctx.global.set(
+			"debank",
+			new ivm.ExternalCopy({}).copyInto({ release: true }),
+		);
+
+		const { installDebankClient } = await import("./client.js");
+		const { createExecutionScope } = await import("./scope.js");
+		await installDebankClient(ctx, createExecutionScope());
+
+		const script = await isolate.compileScript(
+			`(async () => { return await debank.user.getUserChainBalance({chain_id:"eth", id:"0xabc"}); })()`,
+		);
+		await script.run(ctx, { timeout: 5_000, promise: true, copy: true });
+
+		const opts = rawSpy.mock.calls[0]?.[1] as { timeout?: number };
+		expect(opts.timeout).toBe(6_000);
+	});
+
 	it("per-method timeoutMs override surfaces in the timeout error message", async () => {
 		// getUserTokensAcrossChains has timeoutMs: 30_000 in tool-metadata, so
 		// an ECONNABORTED from one of its internal calls should surface as a
