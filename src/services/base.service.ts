@@ -24,10 +24,11 @@ function pathOf(url: string): string {
 	}
 }
 
-// Wall-clock instrumentation for every upstream HTTP request. Emits a single
-// stderr line per call so we can identify slow endpoints (e.g. all_token_list
-// for whales) from real session traces rather than guessing. Keep at info
-// level so it shows up in MCP host logs by default; silence with LOG_LEVEL=warn.
+// Wall-clock instrumentation for every upstream HTTP request. One stderr
+// line per call so we can identify slow endpoints from real session traces
+// when needed. Emitted at `debug` level so production logs stay quiet by
+// default — failures are already surfaced via service-level `logger.error`
+// with wallet + endpoint context. Set LOG_LEVEL=debug to see these.
 async function timed<T>(
 	op: "GET" | "POST",
 	url: string,
@@ -39,12 +40,12 @@ async function timed<T>(
 	try {
 		const result = await fn();
 		const ms = Date.now() - start;
-		apiLogger.info(`op=${op} route=${route} path=${path} ms=${ms} ok=true`);
+		apiLogger.debug(`op=${op} route=${route} path=${path} ms=${ms} ok=true`);
 		return result;
 	} catch (err) {
 		const ms = Date.now() - start;
 		const msg = (err as Error)?.message ?? String(err);
-		apiLogger.info(
+		apiLogger.debug(
 			`op=${op} route=${route} path=${path} ms=${ms} ok=false err=${msg.slice(0, 120)}`,
 		);
 		throw err;
@@ -143,7 +144,7 @@ async function cachedGet<T>(
 	const now = Date.now();
 	const existing = getCache.get(key) as CacheEntry<T> | undefined;
 	if (existing && existing.expiresAt > now) {
-		apiLogger.info(`op=GET route=${route} path=${pathOf(url)} cache=hit`);
+		apiLogger.debug(`op=GET route=${route} path=${pathOf(url)} cache=hit`);
 		return raceWithSignal(existing.promise, callerSignal);
 	}
 	// Expired entry about to be replaced — clear its pending timer to keep the
