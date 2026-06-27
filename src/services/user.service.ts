@@ -382,7 +382,8 @@ export class UserService extends BaseService {
 			matches,
 			total,
 			total_usd,
-			mixed_representations: new Set(matched.map((h) => h.name)).size > 1,
+			mixed_representations:
+				new Set(matched.map((h) => h.name.trim().toLowerCase())).size > 1,
 			chains: [...new Set(matched.map((h) => h.chain))],
 			partial: skipped.length > 0,
 			chains_skipped: skipped,
