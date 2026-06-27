@@ -523,3 +523,23 @@ export type CacheEntry = {
 	data: unknown;
 	expiresAt: number;
 };
+
+export type TokenBalanceAcrossChains = {
+	wallet: string;
+	token: string;
+	matches: Array<{
+		chain: string;
+		name: string;
+		symbol: string;
+		amount: number | null;
+		price: number;
+		usd: number;
+	}>;
+	total: number;
+	total_usd: number;
+	mixed_representations: boolean;
+	chains: string[];
+	partial: boolean;
+	chains_skipped: string[];
+	error?: string;
+};

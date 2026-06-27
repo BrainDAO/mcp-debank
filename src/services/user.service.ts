@@ -3,12 +3,15 @@
  * Handles all user-related operations including portfolios, balances, and history
  */
 
+import { resolveChain } from "../lib/entity-resolver.js";
+import { matchesTokenReference } from "../lib/token-matcher.js";
 import { createChildLogger } from "../lib/utils/index.js";
 import type {
 	AppProtocolPosition,
 	NetCurvePoint,
 	NFTAuthorization,
 	TokenAuthorization,
+	TokenBalanceAcrossChains,
 	UserChainBalance,
 	UserHistoryItem,
 	UserNFT,
@@ -313,6 +316,77 @@ export class UserService extends BaseService {
 		options?: RequestOptions,
 	): Promise<UserTokenBalance[]> {
 		return (await this._getUserTokensWithSkippedChains(args, options)).tokens;
+	}
+
+	async getTokenBalanceAcrossChainsRaw(
+		args: { id: string; token: string; chain?: string },
+		options?: RequestOptions,
+	): Promise<TokenBalanceAcrossChains> {
+		const { id, token, chain } = args;
+		const empty = (error?: string): TokenBalanceAcrossChains => ({
+			wallet: id,
+			token,
+			matches: [],
+			total: 0,
+			total_usd: 0,
+			mixed_representations: false,
+			chains: [],
+			partial: false,
+			chains_skipped: [],
+			...(error ? { error } : {}),
+		});
+
+		let holdings: UserTokenBalance[];
+		let skipped: string[] = [];
+		if (chain) {
+			const chain_id = await resolveChain(chain);
+			if (!chain_id) return empty(`Could not resolve chain '${chain}'.`);
+			holdings = await this.getUserTokenListRaw(
+				{ id, chain_id, is_all: true },
+				options,
+			);
+		} else {
+			const r = await this._getUserTokensWithSkippedChains(
+				{ id, min_usd_value: 0, is_all: true },
+				options,
+			);
+			holdings = r.tokens;
+			skipped = r.skipped;
+		}
+
+		const matched = holdings.filter((h) => matchesTokenReference(token, h));
+		const matches = matched.map((h) => {
+			const amount = Number.isFinite(h.amount) ? h.amount : null;
+			const price = Number.isFinite(h.price) ? h.price : 0;
+			const usd = amount !== null ? amount * price : 0;
+			return {
+				chain: h.chain,
+				name: h.name,
+				symbol: h.symbol,
+				amount,
+				price,
+				usd,
+			};
+		});
+		const total = matches.reduce(
+			(s, m) => (m.amount !== null ? s + m.amount : s),
+			0,
+		);
+		const total_usd = matches.reduce(
+			(s, m) => (m.amount !== null ? s + m.usd : s),
+			0,
+		);
+		return {
+			wallet: id,
+			token,
+			matches,
+			total,
+			total_usd,
+			mixed_representations: new Set(matched.map((h) => h.name)).size > 1,
+			chains: [...new Set(matched.map((h) => h.chain))],
+			partial: skipped.length > 0,
+			chains_skipped: skipped,
+		};
 	}
 
 	async getUserNftListRaw(
