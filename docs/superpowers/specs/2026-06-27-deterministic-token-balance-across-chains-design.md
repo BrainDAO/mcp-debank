@@ -86,8 +86,11 @@ Algorithm:
    - no `error`, `matches: []` → wallet holds none of the token.
    - no `error`, `matches` non-empty, `partial: true` → results, but a chain was
      skipped (under-count possible).
-   Infra failures (a per-call network/timeout in the single-chain path) THROW —
-   the sandbox surfaces the error string, as today.
+   Infra failures THROW (the sandbox surfaces the error string, as today) —
+   both (a) a per-call network/timeout in the single-chain path, AND (b) the
+   initial `getUserTotalBalanceRaw` chain-discovery lookup in the all-chains
+   path. Only per-chain failures DURING the fan-out become `chains_skipped`;
+   `partial` never substitutes for a hard failure of the initial lookup.
 
 ### Pure matcher — `src/lib/token-matcher.ts` (sibling of `entity-resolver.ts`, unit-tested)
 
@@ -123,15 +126,31 @@ match `USDC.e`/`USDC (PoS)`. The tool description states this.
 ### Internal helper for skipped-chain observability
 
 The current `getUserTokensAcrossChainsRaw` returns `Promise<UserTokenBalance[]>`
-and a flat array is the contract guest code relies on (`tokens.map(...)`); the
-only registrations are `tool-metadata.ts:558` and `search-docs/embedded-index.ts:585`.
-To avoid a breaking change:
-- Extract a private `_getUserTokensWithSkippedChains({ id, min_usd_value, is_all })
-  -> { tokens: UserTokenBalance[]; skipped: string[] }` that does the existing
-  fan-out and records each chain id whose per-chain `.catch` fired.
-- `getUserTokensAcrossChainsRaw` becomes a thin wrapper returning `helper().tokens`
-  (unchanged external contract).
+and a flat array is the contract guest code relies on (`tokens.map(...)`). To
+avoid a breaking change:
+- Extract `_getUserTokensWithSkippedChains(args, options?: RequestOptions):
+  Promise<{ tokens: UserTokenBalance[]; skipped: string[] }>` that does the
+  existing fan-out. **Keep the `options?: RequestOptions` parameter** — the
+  abort plumbing must be preserved end-to-end: the `throwIfAborted()` calls
+  (user.service.ts:263-273, 286, 318), threading `options` into
+  `getUserTotalBalanceRaw` and every per-chain `getUserTokenListRaw`, and the
+  per-chain `.catch` re-throw on `signal.aborted` (user.service.ts:306). The
+  18-line JSDoc (user.service.ts:240-258) **moves with the fan-out** into the
+  helper; the wrapper becomes minimal.
+- **Recording skipped chains — closure-and-push:** declare `const skipped:
+  string[] = []` outside the `Promise.all`, and `push(chain_id)` inside the
+  existing per-chain `.catch` **AFTER** the abort re-throw check
+  (`if (options?.signal?.aborted) throw err;`). A cancellation is NOT a skipped
+  chain — pushing only on the non-abort branch keeps it that way. Smallest diff;
+  do not switch to `allSettled`.
+- `getUserTokensAcrossChainsRaw` becomes a thin wrapper returning
+  `(await _getUserTokensWithSkippedChains(args, options)).tokens` — unchanged
+  external contract (a regression test asserts the flat array).
 - The new method consumes the helper directly to get `skipped`.
+- The `_` prefix is **convention only** — the method is TypeScript-`public` so
+  tests reach it directly. Sandbox exposure is gated by `TOOL_METADATA`
+  registration (client.ts:270-290 bridges only registered methods), not by
+  method visibility, so leaving the helper TS-public is safe.
 
 ### TOOL_METADATA entry + search_docs
 
@@ -142,9 +161,14 @@ To avoid a breaking change:
   (`TokenBalanceAcrossChainsSchema`), `description` + `exampleCall` (teach "balance
   of a named token at a wallet" + state the bridged-variant limitation),
   `timeoutMs: 45_000`.
-- `src/mcp/search-docs/embedded-index.ts`: add the matching discovery entry
-  (this file is what `search_docs` searches — without it the method is callable
-  but not discoverable). Mirror the existing `getUserTokensAcrossChains` entry.
+- `search_docs` discoverability — **no manual edit needed.** The `TOOL_METADATA`
+  entry above is the single source: `pnpm build:docs` (run by `pnpm prebuild`
+  before `build`, and by `pnpm prepare` for source/git installs per commit
+  7ebd794) regenerates `src/mcp/search-docs/embedded-index.ts` from
+  `TOOL_METADATA` (see `scripts/build-docs-index.ts`, which maps `TOOL_METADATA`
+  and writes the file). **Do NOT hand-edit `embedded-index.ts`** — its header is
+  "AUTO-GENERATED … Do not edit by hand"; a manual entry is overwritten on the
+  next build (CI, publish, or any contributor's install).
 - `src/mcp/legacy/response-schemas.ts`: add
   `export const TokenBalanceAcrossChainsSchema` (object with the `matches` array
   etc.). `matches[].amount` is **`z.number().nullable()`** and `error` is
