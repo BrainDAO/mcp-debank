@@ -57,12 +57,12 @@ Always a COMPLETE sweep; does not expose `min_usd_value`/`is_all`.
 Algorithm:
 1. **Fetch (two paths):**
    - `chain` provided → `resolveChain(chain)`, then single-chain
-     `this.getUserTokenListRaw({ id, chain_id, is_all: true })`. Don't fan out to
+     `this.getUserTokenListRaw({ id, chain_id, is_all: true }, options)`. Don't fan out to
      N chains to drop N-1. If `resolveChain` MISSES → return the normal shape
      with `error` set and all other fields zeroed (see return shape); never
      silently fall back to all chains.
    - `chain` absent → `this._getUserTokensWithSkippedChains({ id,
-     min_usd_value: 0, is_all: true })` (the internal helper — see below).
+     min_usd_value: 0, is_all: true }, options)` (the internal helper — see below).
      `min_usd_value: 0` queries EVERY chain the wallet has touched (the default
      of 1 would drop a chain whose total USD < $1, hiding the token there).
 2. **Match:** keep holdings the matcher accepts for `token`.
