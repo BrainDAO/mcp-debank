@@ -615,7 +615,7 @@ export const ENTRIES: IndexEntry[] = [
 		name: "debank_get_token_balance_across_chains",
 		qualified: "debank.user.getTokenBalanceAcrossChains",
 		description:
-			"Deterministic balance of a NAMED token (by name or symbol) for a wallet, aggregated across every chain it's held on. Returns per-chain matches plus a combined total (the host reads each holding's human-readable amount — no decimals math). Pass `chain` to restrict to one chain. `token` is a human name/symbol (e.g. 'IQ', 'USDC'), not a contract address. Note: bridged/wrapped symbol variants (e.g. USDC.e, USDC (PoS)) are NOT aggregated — only canonical name/symbol matches.",
+			"Deterministic balance of a NAMED token (by name or symbol) for a wallet, aggregated across every chain it's held on. Returns per-chain matches plus a combined total (the host reads each holding's human-readable amount — no decimals math). Pass `chain` to restrict to one chain. `token` is a human name/symbol (e.g. 'IQ', 'USDC'), not a contract address. Result shape: `{ matches: [{ chain, name, symbol, amount, price, usd }], total, total_usd, mixed_representations, chains, partial, chains_skipped, error? }` — `total` and `total_usd` are FLAT numbers (read `result.total`, NOT `result.total.amount`); `amount` may be null for a holding with no readable balance. Note: bridged/wrapped symbol variants (e.g. USDC.e, USDC (PoS)) are NOT aggregated — only canonical name/symbol matches.",
 		params: {
 			$schema: "https://json-schema.org/draft/2020-12/schema",
 			type: "object",
@@ -639,7 +639,7 @@ export const ENTRIES: IndexEntry[] = [
 			additionalProperties: false,
 		},
 		exampleCall:
-			"await debank.user.getTokenBalanceAcrossChains({id: '0x...', token: 'USDC'})",
+			"const r = await debank.user.getTokenBalanceAcrossChains({id: '0x...', token: 'USDC'}); return { total: r.total, total_usd: r.total_usd, per_chain: r.matches, mixed: r.mixed_representations, partial: r.partial };",
 	},
 	{
 		kind: "method",
