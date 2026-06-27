@@ -612,6 +612,37 @@ export const ENTRIES: IndexEntry[] = [
 	},
 	{
 		kind: "method",
+		name: "debank_get_token_balance_across_chains",
+		qualified: "debank.user.getTokenBalanceAcrossChains",
+		description:
+			"Deterministic balance of a NAMED token (by name or symbol) for a wallet, aggregated across every chain it's held on. Returns per-chain matches plus a combined total (the host reads each holding's human-readable amount — no decimals math). Pass `chain` to restrict to one chain. `token` is a human name/symbol (e.g. 'IQ', 'USDC'), not a contract address. Note: bridged/wrapped symbol variants (e.g. USDC.e, USDC (PoS)) are NOT aggregated — only canonical name/symbol matches.",
+		params: {
+			$schema: "https://json-schema.org/draft/2020-12/schema",
+			type: "object",
+			properties: {
+				id: {
+					description: "The wallet address (0x...).",
+					type: "string",
+				},
+				token: {
+					description:
+						"Token name or symbol, e.g. 'IQ' or 'USDC'. Human-readable, not a contract address.",
+					type: "string",
+				},
+				chain: {
+					description:
+						"Optional chain id or name to restrict to (e.g. 'eth', 'Polygon').",
+					type: "string",
+				},
+			},
+			required: ["id", "token"],
+			additionalProperties: false,
+		},
+		exampleCall:
+			"await debank.user.getTokenBalanceAcrossChains({id: '0x...', token: 'USDC'})",
+	},
+	{
+		kind: "method",
 		name: "debank_get_user_nft_list",
 		qualified: "debank.user.getUserNftList",
 		description:
