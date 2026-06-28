@@ -6,12 +6,27 @@
 // crossing the network.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveChain } from "../lib/entity-resolver.js";
 import {
 	UserNftAuthorizedListSchema,
 	UserTokenAuthorizedListSchema,
 	UserTotalNetCurveSchema,
 } from "../mcp/legacy/response-schemas.js";
 import { userService } from "./index.js";
+
+vi.mock("../lib/entity-resolver.js", () => ({ resolveChain: vi.fn() }));
+
+const T = (over: any = {}) => ({
+	chain: "eth",
+	name: "Everipedia IQ",
+	symbol: "IQ",
+	display_symbol: null,
+	optimized_symbol: "IQ",
+	id: "0x1",
+	amount: 1,
+	price: 2,
+	...over,
+});
 
 const WALLET = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
 
@@ -778,5 +793,178 @@ describe("response schemas validate against realistic fixtures", () => {
 				nested: 42,
 			});
 		}
+	});
+});
+
+describe("_getUserTokensWithSkippedChains", () => {
+	it("returns skipped chain ids for chains whose token_list rejected", async () => {
+		vi.spyOn(userService, "getUserTotalBalanceRaw").mockResolvedValue({
+			total_usd_value: 5,
+			chain_list: [
+				{ id: "eth", usd_value: 5 },
+				{ id: "bsc", usd_value: 3 },
+			],
+		} as any);
+		vi.spyOn(userService, "getUserTokenListRaw").mockImplementation(
+			async ({ chain_id }: any) => {
+				if (chain_id === "bsc") throw new Error("503");
+				return [
+					{
+						chain: "eth",
+						name: "IQ",
+						symbol: "IQ",
+						amount: 1,
+						price: 1,
+					} as any,
+				];
+			},
+		);
+		const { tokens, skipped } =
+			await userService._getUserTokensWithSkippedChains({
+				id: WALLET,
+				min_usd_value: 0,
+			});
+		expect(tokens).toHaveLength(1);
+		expect(skipped).toEqual(["bsc"]);
+	});
+});
+
+describe("getUserTokensAcrossChainsRaw (contract preserved)", () => {
+	it("still returns a flat token array", async () => {
+		vi.spyOn(userService, "getUserTotalBalanceRaw").mockResolvedValue({
+			total_usd_value: 5,
+			chain_list: [{ id: "eth", usd_value: 5 }],
+		} as any);
+		vi.spyOn(userService, "getUserTokenListRaw").mockResolvedValue([
+			{ chain: "eth", name: "IQ", symbol: "IQ", amount: 1, price: 1 } as any,
+		]);
+		const tokens = await userService.getUserTokensAcrossChainsRaw({
+			id: WALLET,
+		});
+		expect(Array.isArray(tokens)).toBe(true);
+		expect(tokens).toHaveLength(1);
+	});
+});
+
+describe("getTokenBalanceAcrossChainsRaw", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+	it("aggregates matches across chains with total, usd, and dedup", async () => {
+		vi.spyOn(userService, "_getUserTokensWithSkippedChains").mockResolvedValue({
+			tokens: [
+				T({ chain: "eth", amount: 1, price: 2 }),
+				T({ chain: "base", name: "pTokens IQ", amount: 10, price: 2 }),
+				T({
+					chain: "eth",
+					symbol: "DAI",
+					name: "Dai",
+					optimized_symbol: "DAI",
+					amount: 999,
+				}),
+			],
+			skipped: [],
+		});
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+		});
+		expect(r.matches.map((m) => m.chain).sort()).toEqual(["base", "eth"]);
+		expect(r.total).toBe(11);
+		expect(r.total_usd).toBe(22);
+		expect(r.mixed_representations).toBe(true);
+		expect(r.chains.sort()).toEqual(["base", "eth"]);
+		expect(r.partial).toBe(false);
+		expect(r.error).toBeUndefined();
+	});
+	it("surfaces partial + chains_skipped", async () => {
+		vi.spyOn(userService, "_getUserTokensWithSkippedChains").mockResolvedValue({
+			tokens: [T()],
+			skipped: ["bsc"],
+		});
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+		});
+		expect(r.partial).toBe(true);
+		expect(r.chains_skipped).toEqual(["bsc"]);
+	});
+	it("uses a single-chain fetch when chain is given", async () => {
+		(resolveChain as any).mockResolvedValue("eth");
+		const list = vi
+			.spyOn(userService, "getUserTokenListRaw")
+			.mockResolvedValue([T()]);
+		const agg = vi.spyOn(userService, "_getUserTokensWithSkippedChains");
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+			chain: "ethereum",
+		});
+		expect(resolveChain).toHaveBeenCalledWith("ethereum");
+		expect(list).toHaveBeenCalledWith(
+			{ id: WALLET, chain_id: "eth", is_all: true },
+			undefined,
+		);
+		expect(agg).not.toHaveBeenCalled();
+		expect(r.total).toBe(1);
+	});
+	it("returns an error (fields zeroed) when the chain cannot be resolved", async () => {
+		(resolveChain as any).mockResolvedValue(null);
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+			chain: "nope",
+		});
+		expect(r.error).toMatch(/nope/);
+		expect(r.matches).toEqual([]);
+		expect(r.total).toBe(0);
+		expect(r.partial).toBe(false);
+	});
+	it("returns empty (no error) when nothing matches", async () => {
+		vi.spyOn(userService, "_getUserTokensWithSkippedChains").mockResolvedValue({
+			tokens: [T({ symbol: "DAI", name: "Dai", optimized_symbol: "DAI" })],
+			skipped: [],
+		});
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+		});
+		expect(r.matches).toEqual([]);
+		expect(r.error).toBeUndefined();
+	});
+	it("marks a non-finite amount null and excludes it from totals", async () => {
+		vi.spyOn(userService, "_getUserTokensWithSkippedChains").mockResolvedValue({
+			tokens: [
+				T({ chain: "eth", amount: 5, price: 1 }),
+				T({ chain: "base", amount: Number.NaN, price: 1 }),
+			],
+			skipped: [],
+		});
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+		});
+		expect(r.matches.find((m) => m.chain === "base")?.amount).toBeNull();
+		expect(r.total).toBe(5);
+	});
+	it("survives a null name on a matched holding (defensive nullish coalesce)", async () => {
+		// DeBank occasionally returns null `name` for custom/newly-deployed
+		// tokens — the matcher matches via symbol, but downstream string ops
+		// must not crash. Mirrors the cookbook's `p && p.name` precedent.
+		vi.spyOn(userService, "_getUserTokensWithSkippedChains").mockResolvedValue({
+			tokens: [
+				T({ chain: "eth", name: null as unknown as string, symbol: "IQ" }),
+				T({ chain: "base", name: "Everipedia IQ", symbol: "IQ" }),
+			],
+			skipped: [],
+		});
+		const r = await userService.getTokenBalanceAcrossChainsRaw({
+			id: WALLET,
+			token: "IQ",
+		});
+		expect(r.matches.find((m) => m.chain === "eth")?.name).toBe("");
+		// Null name coalesces to "" — distinct from "everipedia iq" — so the
+		// flag still surfaces. Without the guard the .trim() above would throw.
+		expect(r.mixed_representations).toBe(true);
 	});
 });

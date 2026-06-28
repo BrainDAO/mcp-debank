@@ -297,6 +297,29 @@ export const UserTokenListSchema = z.array(UserTokenBalanceSchema);
 /** debank.user.getUserTokensAcrossChains — host-side fan-out replacement for the deprecated all_token_list endpoint. */
 export const UserTokensAcrossChainsSchema = z.array(UserTokenBalanceSchema);
 
+/** debank.user.getTokenBalanceAcrossChains — deterministic per-chain balance + total for a named token. */
+export const TokenBalanceAcrossChainsSchema = z.object({
+	wallet: z.string(),
+	token: z.string(),
+	matches: z.array(
+		z.object({
+			chain: z.string(),
+			name: z.string(),
+			symbol: z.string(),
+			amount: z.number().nullable(),
+			price: z.number(),
+			usd: z.number(),
+		}),
+	),
+	total: z.number(),
+	total_usd: z.number(),
+	mixed_representations: z.boolean(),
+	chains: z.array(z.string()),
+	partial: z.boolean(),
+	chains_skipped: z.array(z.string()),
+	error: z.string().optional(),
+});
+
 const UserNFTSchema = z.object({
 	id: z.string(),
 	contract_id: z.string(),

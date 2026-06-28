@@ -3,12 +3,15 @@
  * Handles all user-related operations including portfolios, balances, and history
  */
 
+import { resolveChain } from "../lib/entity-resolver.js";
+import { matchesTokenReference } from "../lib/token-matcher.js";
 import { createChildLogger } from "../lib/utils/index.js";
 import type {
 	AppProtocolPosition,
 	NetCurvePoint,
 	NFTAuthorization,
 	TokenAuthorization,
+	TokenBalanceAcrossChains,
 	UserChainBalance,
 	UserHistoryItem,
 	UserNFT,
@@ -256,79 +259,143 @@ export class UserService extends BaseService {
 	 * is bounded by axios + DeBank). The execute wrapper grants this method a
 	 * 30 s budget via the `timeoutMs` override in tool-metadata.
 	 */
-	async getUserTokensAcrossChainsRaw(
+	async _getUserTokensWithSkippedChains(
 		args: { id: string; min_usd_value?: number; is_all?: boolean },
 		options?: RequestOptions,
-	): Promise<UserTokenBalance[]> {
+	): Promise<{ tokens: UserTokenBalance[]; skipped: string[] }> {
 		const throwIfAborted = () => {
 			if (options?.signal?.aborted) {
-				// Preserve the caller's reason (or fall back to a standard
-				// AbortError) so downstream `error.name === "AbortError"` checks
-				// in axios/fetch/retry libs still discriminate.
 				throw (
 					options.signal.reason ??
 					new DOMException("This operation was aborted", "AbortError")
 				);
 			}
 		};
-		// Check at entry — skip the cache lookup, the first upstream call, and
-		// the fan-out if the caller already cancelled.
 		throwIfAborted();
 		const minUsdValue = args.min_usd_value ?? 1;
+		const skipped: string[] = [];
 		try {
 			const portfolio = await this.getUserTotalBalanceRaw(
 				{ id: args.id },
 				options,
 			);
-			// Re-check between calls — avoids firing N parallel token_list
-			// requests when the caller aborted while we were waiting on the
-			// portfolio breakdown.
 			throwIfAborted();
-			// Defensive optional chaining at the API boundary — the typed
-			// signature promises non-null UserTotalBalance, but axios will
-			// hand us whatever the upstream actually returned. Also require
-			// `c.id` so we never feed `chain_id: undefined` into a wasted
-			// per-chain fetch.
 			const targetChains = (portfolio?.chain_list ?? [])
 				.filter((c) => c?.id && c.usd_value >= minUsdValue)
 				.map((c) => c.id);
-			if (targetChains.length === 0) return [];
-			// Per-chain `.catch` so a single chain's transient failure (rate
-			// limit, 5xx, axios timeout, etc.) doesn't fail the whole aggregate
-			// — the user gets the chains that succeeded. Abort errors are still
-			// propagated so cancellation is honoured for the whole batch.
+			if (targetChains.length === 0) return { tokens: [], skipped: [] };
 			const lists = await Promise.all(
 				targetChains.map((chain_id) =>
 					this.getUserTokenListRaw(
 						{ id: args.id, chain_id, is_all: args.is_all },
 						options,
 					).catch((err) => {
-						if (options?.signal?.aborted) throw err;
+						if (options?.signal?.aborted) throw err; // cancellation is NOT a skip
 						logger.warn(
 							`Skipping chain ${chain_id} for user ${args.id} due to upstream error`,
 							err as Error,
 						);
+						skipped.push(chain_id);
 						return [] as UserTokenBalance[];
 					}),
 				),
 			);
-			// Final check: if the signal aborted after all per-chain calls
-			// settled but before we return, honour the abort contract instead
-			// of leaking data the caller already cancelled.
 			throwIfAborted();
-			return lists.flat();
+			return { tokens: lists.flat(), skipped };
 		} catch (error) {
-			// When the signal is aborted, always surface the canonical
-			// AbortError (signal.reason or DOMException). A concurrent
-			// network error that bubbled into the catch shouldn't mask the
-			// fact that the caller cancelled — downstream
-			// `error.name === "AbortError"` checks rely on this.
 			throwIfAborted();
 			throw logAndWrapError(
 				`Failed to fetch tokens across chains for user ${args.id}`,
 				error,
 			);
 		}
+	}
+
+	async getUserTokensAcrossChainsRaw(
+		args: { id: string; min_usd_value?: number; is_all?: boolean },
+		options?: RequestOptions,
+	): Promise<UserTokenBalance[]> {
+		return (await this._getUserTokensWithSkippedChains(args, options)).tokens;
+	}
+
+	async getTokenBalanceAcrossChainsRaw(
+		args: { id: string; token: string; chain?: string },
+		options?: RequestOptions,
+	): Promise<TokenBalanceAcrossChains> {
+		const { id, token, chain } = args;
+		const empty = (error?: string): TokenBalanceAcrossChains => ({
+			wallet: id,
+			token,
+			matches: [],
+			total: 0,
+			total_usd: 0,
+			mixed_representations: false,
+			chains: [],
+			partial: false,
+			chains_skipped: [],
+			...(error ? { error } : {}),
+		});
+
+		let holdings: UserTokenBalance[];
+		let skipped: string[] = [];
+		if (chain) {
+			const chain_id = await resolveChain(chain);
+			if (!chain_id) return empty(`Could not resolve chain '${chain}'.`);
+			holdings = await this.getUserTokenListRaw(
+				{ id, chain_id, is_all: true },
+				options,
+			);
+		} else {
+			const r = await this._getUserTokensWithSkippedChains(
+				{ id, min_usd_value: 0, is_all: true },
+				options,
+			);
+			holdings = r.tokens;
+			skipped = r.skipped;
+		}
+
+		const matched = holdings.filter((h) => matchesTokenReference(token, h));
+		// DeBank response objects occasionally have null/missing `name` or
+		// `symbol` fields on custom/newly-deployed tokens (cookbook precedent —
+		// see commit b0b12f1's defensive `p && p.name` guard). The TS types
+		// claim non-null, but `fetchWithToolConfig` does not validate the
+		// response, so the runtime can hand us nulls. Coalesce to "" here so
+		// downstream string ops (and the agent's render) don't trip on them.
+		const safeName = (h: UserTokenBalance) => h.name ?? "";
+		const safeSymbol = (h: UserTokenBalance) => h.symbol ?? "";
+		const matches = matched.map((h) => {
+			const amount = Number.isFinite(h.amount) ? h.amount : null;
+			const price = Number.isFinite(h.price) ? h.price : 0;
+			const usd = amount !== null ? amount * price : 0;
+			return {
+				chain: h.chain,
+				name: safeName(h),
+				symbol: safeSymbol(h),
+				amount,
+				price,
+				usd,
+			};
+		});
+		const total = matches.reduce(
+			(s, m) => (m.amount !== null ? s + m.amount : s),
+			0,
+		);
+		const total_usd = matches.reduce(
+			(s, m) => (m.amount !== null ? s + m.usd : s),
+			0,
+		);
+		return {
+			wallet: id,
+			token,
+			matches,
+			total,
+			total_usd,
+			mixed_representations:
+				new Set(matched.map((h) => safeName(h).trim().toLowerCase())).size > 1,
+			chains: [...new Set(matched.map((h) => h.chain))],
+			partial: skipped.length > 0,
+			chains_skipped: skipped,
+		};
 	}
 
 	async getUserNftListRaw(
